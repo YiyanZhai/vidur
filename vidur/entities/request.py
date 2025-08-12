@@ -198,6 +198,16 @@ class Request(BaseEntity):
     @property
     def has_started_decode(self) -> bool:
         return self._num_processed_tokens > self._num_prefill_tokens + 1
+    
+    def set_offloaded(self, flag: bool):
+        self._offloaded = flag
+
+    def on_external_completion(self, completion_time: float):
+        base_time = getattr(self, "scheduled_at", getattr(self, "arrived_at", completion_time))
+        self._is_prefill_complete = True
+        self._completed = True
+        self.prefill_completed_at = base_time
+        self.completed_at = completion_time
 
     def on_batch_schedule(
         self,

@@ -64,8 +64,11 @@ class Simulator:
         while self._event_queue and not self._terminate:
             _, event = heapq.heappop(self._event_queue)
             self._set_time(event._time)
+            logger.debug(f"Simulation time: {self._time}s")
             new_events = event.handle_event(self._scheduler, self._metric_store)
+            logger.debug(f"{event} + {len(new_events)} -> {len(self._event_queue)}")
             self._add_events(new_events)
+            logger.debug(f"Event queue size after processing: {len(self._event_queue)}")
 
             if self._config.metrics_config.write_json_trace:
                 self._event_trace.append(event.to_dict())
@@ -95,6 +98,7 @@ class Simulator:
 
     def _add_event(self, event: BaseEvent) -> None:
         heapq.heappush(self._event_queue, (event._priority_number, event))
+        logger.debug(f"Added event: {event} to the queue")
 
     def _add_events(self, events: List[BaseEvent]) -> None:
         for event in events:
@@ -105,6 +109,11 @@ class Simulator:
 
         for request in requests:
             self._add_event(RequestArrivalEvent(request.arrived_at, request))
+            
+        logger.debug(f"Initialized event queue with {len(self._event_queue)} events")
+        # Log the first few events for debugging
+        for i, (_, event) in enumerate(self._event_queue[:5]):
+            logger.debug(f"Event {i}: {event}")
 
     def _set_time(self, time: float) -> None:
         self._time = time

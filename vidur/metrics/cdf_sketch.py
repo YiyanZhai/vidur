@@ -146,5 +146,5 @@ class CDFSketch:
                 labels={"x": x_axis_label},
             )
             fig.update_traces(marker=dict(color="red", size=2))
-            fig.write_image(f"{path}/{plot_name}.png")
+            # fig.write_image(f"{path}/{plot_name}.png")
         self._save_df(df, path, plot_name)

@@ -207,7 +207,7 @@ class DataSeries:
                 labels={"x": y_axis_label},
             )
             fig.update_traces(marker=dict(color="red", size=2))
-            fig.write_image(f"{path}/{plot_name}.png")
+            # fig.write_image(f"{path}/{plot_name}.png")
 
         self._save_df(df, path, plot_name)
 
@@ -252,7 +252,7 @@ class DataSeries:
                 df, x=self._y_name, y="cdf", markers=True, labels={"x": y_axis_label}
             )
             fig.update_traces(marker=dict(color="red", size=2))
-            fig.write_image(f"{path}/{plot_name}.png")
+            # # fig.write_image(f"{path}/{plot_name}.png")
         self._save_df(df, path, plot_name)
 
     def plot_histogram(self, path: str, plot_name: str) -> None:
@@ -292,7 +292,7 @@ class DataSeries:
 
         if self._save_plots:
             fig = px.histogram(df, x=self._y_name, nbins=25)
-            fig.write_image(f"{path}/{plot_name}.png")
+            # # fig.write_image(f"{path}/{plot_name}.png")
 
     def plot_differential(self, path: str, plot_name: str) -> None:
         if len(self._data_series) == 0:
@@ -333,6 +333,6 @@ class DataSeries:
         if self._save_plots:
             fig = px.line(df, x=self._x_name, y=differential_col_name, markers=True)
             fig.update_traces(marker=dict(color="red", size=2))
-            fig.write_image(f"{path}/{plot_name}.png")
+            # fig.write_image(f"{path}/{plot_name}.png")
 
         self._save_df(df, path, plot_name)

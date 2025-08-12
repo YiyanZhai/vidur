@@ -133,6 +133,14 @@ class BaseReplicaScheduler(ABC):
     @abstractmethod
     def _get_next_batch(self) -> Batch:
         pass
+    
+    @abstractmethod
+    def estimate_ttft_ms_if_enqueued_now(self, request: "Request") -> float:
+        """
+        Return predicted TTFT in ms if this request were enqueued now.
+        Must NOT mutate scheduler state.
+        """
+        pass
 
     def on_schedule(self) -> List[Batch]:
         scheduled_batches = []
