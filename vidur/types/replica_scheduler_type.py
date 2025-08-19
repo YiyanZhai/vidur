@@ -7,3 +7,5 @@ class ReplicaSchedulerType(BaseIntEnum):
     SARATHI = 3
     VLLM = 4
     LIGHTLLM = 5
+    SJF = 6
+    SRPT = 7

@@ -22,6 +22,12 @@ class BurstGPTRequestGenerator(BaseRequestGenerator):
 
         # Load the BurstGPT CSV file
         self.trace_df = pd.read_csv(config.trace_file)
+        self.trace_df = self.trace_df[self.trace_df['Log Type'] != 'Conversation log']
+        self.trace_df['Timestamp'] = self.trace_df['Timestamp'] - self.trace_df['Timestamp'].iloc[0]
+        self.trace_df = pd.DataFrame(
+            self.trace_df.values.repeat(2, axis=0),
+            columns=self.trace_df.columns
+        ).reset_index(drop=True)
         
         logger.info(f"Loaded BurstGPT trace file {config.trace_file} with {len(self.trace_df)} requests")
         
@@ -60,6 +66,19 @@ class BurstGPTRequestGenerator(BaseRequestGenerator):
             logger.info(f"Filtered out {initial_count - final_count} requests with zero tokens")
 
         # Ensure total tokens don't exceed max_tokens, adjust prefill if needed
+        total_tokens = self.trace_df["num_prefill_tokens"] + self.trace_df["num_decode_tokens"]
+        excess_tokens = (total_tokens - config.max_tokens).clip(lower=0)
+        self.trace_df["num_prefill_tokens"] = (
+            self.trace_df["num_prefill_tokens"] - excess_tokens
+        ).clip(lower=1)  # Ensure prefill tokens stay >= 1
+        
+        # Additionally, ensure individual token counts stay within execution predictor limits
+        # The default prediction_max_tokens_per_request is 4096, so we should stay below that
+        prediction_limit = 4096  # Leave some margin below 4096
+        self.trace_df["num_prefill_tokens"] = self.trace_df["num_prefill_tokens"].clip(upper=prediction_limit)
+        self.trace_df["num_decode_tokens"] = self.trace_df["num_decode_tokens"].clip(upper=prediction_limit)
+        
+        # Re-apply the total token constraint after individual clamping
         total_tokens = self.trace_df["num_prefill_tokens"] + self.trace_df["num_decode_tokens"]
         excess_tokens = (total_tokens - config.max_tokens).clip(lower=0)
         self.trace_df["num_prefill_tokens"] = (

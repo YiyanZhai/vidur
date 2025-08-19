@@ -10,6 +10,12 @@ from vidur.scheduler.replica_scheduler.orca_replica_scheduler import (
 from vidur.scheduler.replica_scheduler.sarathi_replica_scheduler import (
     SarathiReplicaScheduler,
 )
+from vidur.scheduler.replica_scheduler.sjf_replica_scheduler import (
+    SJFReplicaScheduler,
+)
+from vidur.scheduler.replica_scheduler.srpt_replica_scheduler import (
+    SRPTReplicaScheduler,
+)
 from vidur.scheduler.replica_scheduler.vllm_replica_scheduler import (
     VLLMReplicaScheduler,
 )
@@ -30,3 +36,5 @@ ReplicaSchedulerRegistry.register(ReplicaSchedulerType.VLLM, VLLMReplicaSchedule
 ReplicaSchedulerRegistry.register(
     ReplicaSchedulerType.LIGHTLLM, LightLLMReplicaScheduler
 )
+ReplicaSchedulerRegistry.register(ReplicaSchedulerType.SJF, SJFReplicaScheduler)
+ReplicaSchedulerRegistry.register(ReplicaSchedulerType.SRPT, SRPTReplicaScheduler)

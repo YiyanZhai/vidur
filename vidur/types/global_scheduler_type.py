@@ -5,5 +5,3 @@ class GlobalSchedulerType(BaseIntEnum):
     RANDOM = 1
     ROUND_ROBIN = 2
     LOR = 3
-    SJF = 4
-    SRPT = 5

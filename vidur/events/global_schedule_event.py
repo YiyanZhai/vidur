@@ -1,9 +1,9 @@
 from typing import List
 
-from vidur.events import BaseEvent, ApiRequestCompletionEvent
+from vidur.events import BaseEvent
 from vidur.logger import init_logger
 from vidur.metrics import MetricsStore
-from vidur.scheduler import BaseGlobalScheduler, ApiBackend
+from vidur.scheduler import BaseGlobalScheduler
 from vidur.types import EventType
 
 logger = init_logger(__name__)
@@ -23,29 +23,10 @@ class GlobalScheduleEvent(BaseEvent):
         
         self._replica_set = set()
         self._request_mapping = scheduler.schedule()
-        
-        # threshold_ms = scheduler.config.router_config_ttft_threshold_ms  # add to your scheduler/config
-        threshold_ms = 100
-        # use_api = getattr(scheduler.config, "router_config_use_api", False)
-        use_api = True
-        if use_api:
-            api = ApiBackend(
-                fixed_overhead_ms=450, # scheduler.config.router_config_api_fixed_overhead_ms,
-                per_token_ms=100, # scheduler.config.router_config_api_per_token_ms,
-            )
             
         followup_events = []
 
         for replica_id, request in self._request_mapping:
-            est_ms = scheduler.get_replica_scheduler(replica_id)\
-                              .estimate_ttft_ms_if_enqueued_now(request)
-
-            if use_api and est_ms > threshold_ms:
-                completion_time = api.schedule(self.time, request)  # returns absolute time (sec)
-                # followup_events.append(ApiRequestCompletionEvent(completion_time, request, ttft_ms=est_ms))
-                continue
-            
-            # Enqueue locally
             self._replica_set.add(replica_id)
             scheduler.get_replica_scheduler(replica_id).add_request(request)
 

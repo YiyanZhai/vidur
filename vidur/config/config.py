@@ -195,7 +195,37 @@ class BaseRequestGeneratorConfig(BasePolyConfig):
         default=42,
         metadata={"help": "Seed for the random number generator."},
     )
+    
+@dataclass
+class BurstGPTRequestGeneratorConfig(BaseRequestGeneratorConfig):
+    trace_file: str = field(
+        default="data/BurstGPT_1.csv",
+        metadata={"help": "Path to the BurstGPT trace file."},
+    )
+    prefill_scale_factor: float = field(
+        default=1.0,
+        metadata={"help": "Prefill scale factor for the BurstGPT trace."},
+    )
+    decode_scale_factor: float = field(
+        default=1.0,
+        metadata={"help": "Decode scale factor for the BurstGPT trace."},
+    )
+    time_scale_factor: float = field(
+        default=1.0,
+        metadata={"help": "Time scale factor for the BurstGPT trace."},
+    )
+    max_tokens: int = field(
+        default=4096,
+        metadata={"help": "Maximum tokens for requests."},
+    )
+    num_requests: Optional[int] = field(
+        default=1000,
+        metadata={"help": "Number of requests to use from the trace (None for all)."},
+    )
 
+    @staticmethod
+    def get_type():
+        return RequestGeneratorType.BURSTGPT
 
 @dataclass
 class SyntheticRequestGeneratorConfig(BaseRequestGeneratorConfig):
@@ -250,38 +280,6 @@ class TraceRequestGeneratorConfig(BaseRequestGeneratorConfig):
     @staticmethod
     def get_type():
         return RequestGeneratorType.TRACE_REPLAY
-
-
-@dataclass
-class BurstGPTRequestGeneratorConfig(BaseRequestGeneratorConfig):
-    trace_file: str = field(
-        default="data/BurstGPT_1.csv",
-        metadata={"help": "Path to the BurstGPT trace file."},
-    )
-    prefill_scale_factor: float = field(
-        default=1.0,
-        metadata={"help": "Prefill scale factor for the BurstGPT trace."},
-    )
-    decode_scale_factor: float = field(
-        default=1.0,
-        metadata={"help": "Decode scale factor for the BurstGPT trace."},
-    )
-    time_scale_factor: float = field(
-        default=1.0,
-        metadata={"help": "Time scale factor for the BurstGPT trace."},
-    )
-    max_tokens: int = field(
-        default=4096,
-        metadata={"help": "Maximum tokens for requests."},
-    )
-    num_requests: Optional[int] = field(
-        default=None,
-        metadata={"help": "Number of requests to use from the trace (None for all)."},
-    )
-
-    @staticmethod
-    def get_type():
-        return RequestGeneratorType.BURSTGPT
 
 
 @dataclass
@@ -358,6 +356,24 @@ class SarathiSchedulerConfig(BaseReplicaSchedulerConfig):
     @staticmethod
     def get_type():
         return ReplicaSchedulerType.SARATHI
+
+
+@dataclass
+class SJFSchedulerConfig(BaseReplicaSchedulerConfig):
+    """Configuration for Shortest Job First (SJF) Replica Scheduler."""
+
+    @staticmethod
+    def get_type():
+        return ReplicaSchedulerType.SJF
+
+
+@dataclass
+class SRPTSchedulerConfig(BaseReplicaSchedulerConfig):
+    """Configuration for Shortest Remaining Processing Time (SRPT) Replica Scheduler."""
+
+    @staticmethod
+    def get_type():
+        return ReplicaSchedulerType.SRPT
 
 
 @dataclass
@@ -520,20 +536,6 @@ class LORGlobalSchedulerConfig(BaseGlobalSchedulerConfig):
     @staticmethod
     def get_type():
         return GlobalSchedulerType.LOR
-
-
-@dataclass
-class SJFGlobalSchedulerConfig(BaseGlobalSchedulerConfig):
-    @staticmethod
-    def get_type():
-        return GlobalSchedulerType.SJF
-
-
-@dataclass
-class SRPTGlobalSchedulerConfig(BaseGlobalSchedulerConfig):
-    @staticmethod
-    def get_type():
-        return GlobalSchedulerType.SRPT
 
 
 @dataclass
