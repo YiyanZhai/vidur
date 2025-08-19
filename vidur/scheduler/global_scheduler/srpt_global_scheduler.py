@@ -10,6 +10,7 @@ class SRPTGlobalScheduler(BaseGlobalScheduler):
     Schedules requests based on their remaining token count (remaining work),
     with requests having the least remaining work getting highest priority.
     This is a preemptive version of SJF that considers work already done.
+    Uses load balancing based on pending remaining tokens at each replica.
     """
 
     def schedule(self) -> List[Tuple[int, Request]]:
@@ -22,15 +23,21 @@ class SRPTGlobalScheduler(BaseGlobalScheduler):
         )
 
         request_mapping = []
-        replica_loads = [0] * self._num_replicas
+        # Keep a map of replica_id -> pending remaining tokens
+        # This tracks the current remaining work at each replica scheduler
+        pending_remaining_tokens_map = {
+            replica_scheduler.replica_id: replica_scheduler.num_pending_remaining_tokens
+            for replica_scheduler in self._replica_schedulers.values()
+        }
 
         while self._request_queue:
             request = self._request_queue.pop(0)
             remaining_tokens = request.total_tokens - request.num_processed_tokens
             
-            # Find the replica with the least load
-            replica_id = min(range(self._num_replicas), key=lambda i: replica_loads[i])
-            replica_loads[replica_id] += remaining_tokens
+            # Find the replica with the least pending remaining tokens (least remaining work)
+            replica_id = min(pending_remaining_tokens_map.items(), key=lambda x: x[1])[0]
+            # Update the pending remaining tokens for this replica
+            pending_remaining_tokens_map[replica_id] += remaining_tokens
             request_mapping.append((replica_id, request))
 
         return request_mapping

@@ -69,6 +69,19 @@ class BaseReplicaScheduler(ABC):
         return len(self._request_queue)
 
     @property
+    def num_pending_tokens(self) -> int:
+        """Return the total number of tokens pending in the request queue."""
+        return sum(request.total_tokens for request in self._request_queue)
+
+    @property
+    def num_pending_remaining_tokens(self) -> int:
+        """Return the total number of remaining tokens (unprocessed) in the request queue."""
+        return sum(
+            request.total_tokens - request.num_processed_tokens 
+            for request in self._request_queue
+        )
+
+    @property
     def replica_id(self) -> int:
         return self._replica_id
 

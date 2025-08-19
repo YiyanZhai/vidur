@@ -8,7 +8,8 @@ class SJFGlobalScheduler(BaseGlobalScheduler):
     """
     Shortest Job First (SJF) global scheduler.
     Schedules requests in order of their total token count (job size),
-    with shorter jobs having higher priority.
+    with shorter jobs having higher priority. Uses load balancing based on
+    pending tokens at each replica.
     """
 
     def schedule(self) -> List[Tuple[int, Request]]:
@@ -19,13 +20,19 @@ class SJFGlobalScheduler(BaseGlobalScheduler):
         self._request_queue.sort(key=lambda request: request.total_tokens)
 
         request_mapping = []
-        replica_loads = [0] * self._num_replicas
+        # Keep a map of replica_id -> pending tokens
+        # This tracks the current load at each replica scheduler
+        pending_tokens_map = {
+            replica_scheduler.replica_id: replica_scheduler.num_pending_tokens
+            for replica_scheduler in self._replica_schedulers.values()
+        }
 
         while self._request_queue:
             request = self._request_queue.pop(0)
-            # Find the replica with the least load
-            replica_id = min(range(self._num_replicas), key=lambda i: replica_loads[i])
-            replica_loads[replica_id] += request.total_tokens
-            request_mapping.append((replica_id, request))
-
+            # Find the replica with the least pending tokens (least work)
+            replica_id = min(pending_tokens_map.items(), key=lambda x: x[1])[0]
+            # Update the pending tokens for this replica
+            pending_tokens_map[replica_id] += request.total_tokens
+            request_mapping.append((replica_id, request))    
+        
         return request_mapping
