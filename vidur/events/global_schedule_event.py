@@ -25,7 +25,7 @@ class GlobalScheduleEvent(BaseEvent):
         self._request_mapping = scheduler.schedule()
         
         # threshold_ms = scheduler.config.router_config_ttft_threshold_ms  # add to your scheduler/config
-        threshold_ms = 10
+        threshold_ms = 100
         # use_api = getattr(scheduler.config, "router_config_use_api", False)
         use_api = True
         if use_api:

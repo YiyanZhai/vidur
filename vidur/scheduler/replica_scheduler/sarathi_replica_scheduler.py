@@ -101,11 +101,11 @@ class SarathiReplicaScheduler(BaseReplicaScheduler):
 
         backlog_ms = self._estimate_backlog_ms(avg_first_chunk_ms=avg_first_chunk_ms)
         res = backlog_ms + wait_for_blocks_ms + wait_for_turn_ms + first_chunk_ms
-        logger.info(
-            f"TTFT est for req {request.id} (replica {self._replica_id}): "
-            f"backlog {backlog_ms:.1f} + wait_blocks {wait_for_blocks_ms:.1f} + "
-            f"wait_turn {wait_for_turn_ms:.1f} + first_chunk {first_chunk_ms:.1f} = {res:.1f} ms"
-        )
+        # logger.info(
+        #     f"TTFT est for req {request.id} (replica {self._replica_id}): "
+        #     f"backlog {backlog_ms:.1f} + wait_blocks {wait_for_blocks_ms:.1f} + "
+        #     f"wait_turn {wait_for_turn_ms:.1f} + first_chunk {first_chunk_ms:.1f} = {res:.1f} ms"
+        # )
         return res
 
 

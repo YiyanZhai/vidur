@@ -1,3 +1,6 @@
+from vidur.request_generator.burstgpt_request_generator import (
+    BurstGPTRequestGenerator,
+)
 from vidur.request_generator.synthetic_request_generator import (
     SyntheticRequestGenerator,
 )
@@ -17,4 +20,7 @@ RequestGeneratorRegistry.register(
 )
 RequestGeneratorRegistry.register(
     RequestGeneratorType.TRACE_REPLAY, TraceReplayRequestGenerator
+)
+RequestGeneratorRegistry.register(
+    RequestGeneratorType.BURSTGPT, BurstGPTRequestGenerator
 )

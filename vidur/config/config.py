@@ -253,6 +253,38 @@ class TraceRequestGeneratorConfig(BaseRequestGeneratorConfig):
 
 
 @dataclass
+class BurstGPTRequestGeneratorConfig(BaseRequestGeneratorConfig):
+    trace_file: str = field(
+        default="data/BurstGPT_1.csv",
+        metadata={"help": "Path to the BurstGPT trace file."},
+    )
+    prefill_scale_factor: float = field(
+        default=1.0,
+        metadata={"help": "Prefill scale factor for the BurstGPT trace."},
+    )
+    decode_scale_factor: float = field(
+        default=1.0,
+        metadata={"help": "Decode scale factor for the BurstGPT trace."},
+    )
+    time_scale_factor: float = field(
+        default=1.0,
+        metadata={"help": "Time scale factor for the BurstGPT trace."},
+    )
+    max_tokens: int = field(
+        default=4096,
+        metadata={"help": "Maximum tokens for requests."},
+    )
+    num_requests: Optional[int] = field(
+        default=None,
+        metadata={"help": "Number of requests to use from the trace (None for all)."},
+    )
+
+    @staticmethod
+    def get_type():
+        return RequestGeneratorType.BURSTGPT
+
+
+@dataclass
 class BaseReplicaSchedulerConfig(BasePolyConfig):
     batch_size_cap: int = field(
         default=128,
@@ -488,6 +520,20 @@ class LORGlobalSchedulerConfig(BaseGlobalSchedulerConfig):
     @staticmethod
     def get_type():
         return GlobalSchedulerType.LOR
+
+
+@dataclass
+class SJFGlobalSchedulerConfig(BaseGlobalSchedulerConfig):
+    @staticmethod
+    def get_type():
+        return GlobalSchedulerType.SJF
+
+
+@dataclass
+class SRPTGlobalSchedulerConfig(BaseGlobalSchedulerConfig):
+    @staticmethod
+    def get_type():
+        return GlobalSchedulerType.SRPT
 
 
 @dataclass
