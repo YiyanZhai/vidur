@@ -237,6 +237,7 @@ class SarathiReplicaScheduler(BaseReplicaScheduler):
                     victim_request.restart()
                     self.free(victim_request.id)
                     self._request_queue = [victim_request] + self._request_queue
+                    print(f"Preempted request {victim_request.id}")
                 else:
                     request.restart()
                     self.free(request.id)

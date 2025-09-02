@@ -6,6 +6,7 @@ import pandas as pd
 from vidur.config import BurstGPTRequestGeneratorConfig
 from vidur.entities import Request
 from vidur.request_generator.base_request_generator import BaseRequestGenerator
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,29 @@ class BurstGPTRequestGenerator(BaseRequestGenerator):
         self.trace_df = pd.read_csv(config.trace_file)
         self.trace_df = self.trace_df[self.trace_df['Log Type'] != 'Conversation log']
         self.trace_df['Timestamp'] = self.trace_df['Timestamp'] - self.trace_df['Timestamp'].iloc[0]
-        self.trace_df = pd.DataFrame(
-            self.trace_df.values.repeat(2, axis=0),
+        # Number of duplicates
+        num_duplicates = 10
+
+        # Repeat the rows
+        repeated_df = pd.DataFrame(
+            self.trace_df.values.repeat(num_duplicates, axis=0),
             columns=self.trace_df.columns
         ).reset_index(drop=True)
+        
+        # For Timestamp, add up to 5s random variation
+        repeated_df['Timestamp'] = (
+            repeated_df['Timestamp'] + np.random.uniform(-5, 5, size=len(repeated_df))
+        ).astype(int).clip(lower=0)
+        
+        # For tokens, add up to +/- 20% random variation, but keep at least 1
+        repeated_df['Request tokens'] = (
+            repeated_df['Request tokens'] * np.random.uniform(0.8, 1.2, size=len(repeated_df))
+        ).astype(int).clip(lower=1)
+        repeated_df['Response tokens'] = (
+            repeated_df['Response tokens'] * np.random.uniform(0.8, 1.2, size=len(repeated_df))
+        ).astype(int).clip(lower=1)
+
+        self.trace_df = repeated_df
         
         logger.info(f"Loaded BurstGPT trace file {config.trace_file} with {len(self.trace_df)} requests")
         
@@ -72,12 +92,6 @@ class BurstGPTRequestGenerator(BaseRequestGenerator):
             self.trace_df["num_prefill_tokens"] - excess_tokens
         ).clip(lower=1)  # Ensure prefill tokens stay >= 1
         
-        # Additionally, ensure individual token counts stay within execution predictor limits
-        # The default prediction_max_tokens_per_request is 4096, so we should stay below that
-        prediction_limit = 4096  # Leave some margin below 4096
-        self.trace_df["num_prefill_tokens"] = self.trace_df["num_prefill_tokens"].clip(upper=prediction_limit)
-        self.trace_df["num_decode_tokens"] = self.trace_df["num_decode_tokens"].clip(upper=prediction_limit)
-        
         # Re-apply the total token constraint after individual clamping
         total_tokens = self.trace_df["num_prefill_tokens"] + self.trace_df["num_decode_tokens"]
         excess_tokens = (total_tokens - config.max_tokens).clip(lower=0)
@@ -96,17 +110,17 @@ class BurstGPTRequestGenerator(BaseRequestGenerator):
             self.trace_df = self.trace_df.head(config.num_requests)
             logger.info(f"Limited to {len(self.trace_df)} requests as specified in config")
 
-        # Log statistics
-        logger.info(f"Final dataset has {len(self.trace_df)} requests")
-        logger.info(f"Time range: {self.trace_df['arrived_at'].min():.2f} to {self.trace_df['arrived_at'].max():.2f} seconds")
+        # # Log statistics
+        # logger.info(f"Final dataset has {len(self.trace_df)} requests")
+        # logger.info(f"Time range: {self.trace_df['arrived_at'].min():.2f} to {self.trace_df['arrived_at'].max():.2f} seconds")
         
-        # Compute and log prompt/decode ratio statistics
-        pd_ratio = self.trace_df["num_prefill_tokens"] / self.trace_df["num_decode_tokens"]
-        logger.info(f"Prompt/decode token ratio stats:\n{pd_ratio.describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}")
+        # # Compute and log prompt/decode ratio statistics
+        # pd_ratio = self.trace_df["num_prefill_tokens"] / self.trace_df["num_decode_tokens"]
+        # logger.info(f"Prompt/decode token ratio stats:\n{pd_ratio.describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}")
         
-        # Log token statistics
-        logger.info(f"Prefill tokens stats:\n{self.trace_df['num_prefill_tokens'].describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}")
-        logger.info(f"Decode tokens stats:\n{self.trace_df['num_decode_tokens'].describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}")
+        # # Log token statistics
+        # logger.info(f"Prefill tokens stats:\n{self.trace_df['num_prefill_tokens'].describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}")
+        # logger.info(f"Decode tokens stats:\n{self.trace_df['num_decode_tokens'].describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}")
 
     def generate_requests(self) -> List[Request]:
         requests = []

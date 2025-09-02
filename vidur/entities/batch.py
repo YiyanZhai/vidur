@@ -122,6 +122,7 @@ class Batch(BaseEntity):
             request.on_batch_schedule(time)
 
     def on_batch_end(self, time: float):
+        # print(f"Batch ended {self._id}")
         self._completed = True
         self._completed_at = time
 

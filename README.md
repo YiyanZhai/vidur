@@ -52,6 +52,8 @@ __Instructions on adding a new model to existing or new SKUs can be found [here]
 To run the simulator, create a mamba environment with the given dependency file.
 
 ```sh
+eval "$(mamba shell hook --shell bash)"
+mamba activate /users/yiyan/vidur/env
 mamba env create -p ./env -f ./environment.yml
 mamba env update -f environment-dev.yml
 ```

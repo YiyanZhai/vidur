@@ -215,11 +215,11 @@ class BurstGPTRequestGeneratorConfig(BaseRequestGeneratorConfig):
         metadata={"help": "Time scale factor for the BurstGPT trace."},
     )
     max_tokens: int = field(
-        default=4096,
+        default=1024,
         metadata={"help": "Maximum tokens for requests."},
     )
     num_requests: Optional[int] = field(
-        default=1000,
+        default=500,
         metadata={"help": "Number of requests to use from the trace (None for all)."},
     )
 
@@ -361,7 +361,10 @@ class SarathiSchedulerConfig(BaseReplicaSchedulerConfig):
 @dataclass
 class SJFSchedulerConfig(BaseReplicaSchedulerConfig):
     """Configuration for Shortest Job First (SJF) Replica Scheduler."""
-
+    max_tokens_in_batch: int = field(
+        default=4096,
+        metadata={"help": "Maximum tokens in batch for vLLM."},
+    )
     @staticmethod
     def get_type():
         return ReplicaSchedulerType.SJF
@@ -581,7 +584,7 @@ class BaseExecutionTimePredictorConfig(BasePolyConfig):
         metadata={"help": "Max batch size for prediction."},
     )
     prediction_max_tokens_per_request: int = field(
-        default=4096,
+        default=8192,
         metadata={"help": "Max tokens per request for prediction."},
     )
     attention_decode_batching_overhead_fraction: float = field(

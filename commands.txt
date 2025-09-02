@@ -1,0 +1,1 @@
+python -m vidur.main  --replica_config_device a40 --replica_config_model_name meta-llama/Llama-2-7b-hf --cluster_config_num_replicas 1 --replica_config_tensor_parallel_size 1 --replica_config_num_pipeline_stages 1 --request_generator_config_type burstgpt --replica_scheduler_config_type sjf --execution_time_predictor_config linear_regression

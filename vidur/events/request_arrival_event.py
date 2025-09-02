@@ -21,7 +21,7 @@ class RequestArrivalEvent(BaseEvent):
     ) -> List[BaseEvent]:
         from vidur.events.global_schedule_event import GlobalScheduleEvent
 
-        logger.debug(f"Request: {self._request.id} arrived at {self.time}")
+        logger.info(f"Request: {self._request.id} arrived at {self.time}, with prefill token {self._request.num_prefill_tokens} and decode token {self._request.num_decode_tokens}")
         scheduler.add_request(self._request)
         metrics_store.on_request_arrival(self.time, self._request)
         return [GlobalScheduleEvent(self.time)]
