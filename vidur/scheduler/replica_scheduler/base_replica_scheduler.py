@@ -46,8 +46,8 @@ class BaseReplicaScheduler(ABC):
             self._config.batch_size_cap,
         )
 
-        logger.debug(
-            f"Obtained max batch size of {self._max_batch_size} for replica {self._replica_id}"
+        logger.info(
+            f"Obtained max batch size of {self._max_batch_size} for replica {self._replica_id}, number of blocks: {self._config.num_blocks}"
         )
 
         self._request_queue = []
@@ -113,6 +113,8 @@ class BaseReplicaScheduler(ABC):
             self._allocation_map[request_id] = num_blocks
         else:
             self._allocation_map[request_id] += num_blocks
+
+        print("add req", request_id, "with", num_blocks, "->", self._allocation_map)
 
         assert self._num_allocated_blocks <= self._config.num_blocks
 

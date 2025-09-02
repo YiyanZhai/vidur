@@ -41,6 +41,8 @@ class BatchStageEndEvent(BaseEvent):
             self._replica_id, self._stage_id
         ).on_stage_end()
 
+        # print(f"L5 BatchStageEndEvent with {self._replica_id, self._stage_id, self._batch_stage.id, self._batch_stage} at {self.time}")
+
         self._batch_stage.on_stage_end(self.time)
         metrics_store.on_batch_stage_end(
             self._batch_stage,
@@ -56,13 +58,16 @@ class BatchStageEndEvent(BaseEvent):
                 self._stage_id,
             ),
         ]
+        # print(f"L5 BatchStageEndEvent generated [ReplicaStageScheduleEvent]: {next_events} at {self.time}")
 
         if self._is_last_stage:
-            return next_events + [
+            res = next_events + [
                 BatchEndEvent(self.time, self._replica_id, self._batch)
             ]
+            # print(f"L5 _is_last_stage BatchStageEndEvent generated [BatchEndEvent] at {self.time}: {res}")
+            return res
 
-        return next_events + [
+        res = next_events + [
             BatchStageArrivalEvent(
                 self.time,
                 self._replica_id,
@@ -70,6 +75,8 @@ class BatchStageEndEvent(BaseEvent):
                 self._batch,
             )
         ]
+        # print(f"L5 !is_last_stage BatchStageEndEvent generated [BatchStageArrivalEvent]: {res} at {self.time}")
+        return res
 
     def to_dict(self):
         return {

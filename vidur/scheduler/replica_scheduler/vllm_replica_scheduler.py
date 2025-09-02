@@ -27,6 +27,7 @@ class VLLMReplicaScheduler(BaseReplicaScheduler):
             if request.completed:
                 self.free(request.id)
             else:
+                print(f"Request {request.id} added to preempted_requests, num_running_batches: {self._num_running_batches}")
                 self._preempted_requests.append(request)
 
     def _can_allocate_request(self, request: Request) -> bool:
@@ -101,6 +102,7 @@ class VLLMReplicaScheduler(BaseReplicaScheduler):
 
         # Safer to sort preempted_requests to maintain FIFO order
         self._preempted_requests.sort(key=lambda r: r.arrived_at)
+        
         # all preempted_requests will have prefill completed
         while self._preempted_requests:
             if len(requests) == self._max_micro_batch_size:
@@ -114,6 +116,7 @@ class VLLMReplicaScheduler(BaseReplicaScheduler):
                     victim_request.restart()
                     self.free(victim_request.id)
                     self._request_queue = [victim_request] + self._request_queue
+                    print(f"need to preempt and chose victim_request {victim_request.id}")
                 else:
                     request.restart()
                     self.free(request.id)

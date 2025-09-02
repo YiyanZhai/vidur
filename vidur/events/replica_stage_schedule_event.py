@@ -30,6 +30,8 @@ class ReplicaStageScheduleEvent(BaseEvent):
         ]._replica_stage_schedulers[self._stage_id]
 
         self._batch, self._batch_stage, execution_time = stage_scheduler.on_schedule()
+        if self._batch and self._batch_stage:
+            print(f"    {self._batch}\n    {self._batch_stage}")
 
         if not (self._batch and self._batch_stage):
             return []
@@ -45,7 +47,7 @@ class ReplicaStageScheduleEvent(BaseEvent):
 
         self._is_last_stage = stage_scheduler.is_last_stage
 
-        return [
+        res = [
             BatchStageEndEvent(
                 self.time + self._batch_stage.execution_time,
                 self._replica_id,
@@ -55,8 +57,10 @@ class ReplicaStageScheduleEvent(BaseEvent):
                 self._batch_stage,
             ),
         ]
+        # print(f"L4 [BatchStageEndEvent] generated: {res} at {self.time}")
+        return res
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {
             "time": self.time,
             "event_type": self.event_type,

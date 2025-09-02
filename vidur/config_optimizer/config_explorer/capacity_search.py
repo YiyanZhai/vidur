@@ -53,7 +53,7 @@ class CapacitySearch:
             cpu_affinity_command = f"taskset --cpu-list {self.cpu_core_id}"
 
         command = f"nice -n 1 {cpu_affinity_command} python -m vidur.main {scheduler_config.to_args()}"
-        logger.debug(f"Running command: {command}")
+        logger.info(f"Running command: {command}")
 
         return command
 

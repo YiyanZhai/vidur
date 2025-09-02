@@ -24,19 +24,22 @@ class ReplicaScheduleEvent(BaseEvent):
 
         replica_scheduler = scheduler.get_replica_scheduler(self._replica_id)
         self._batches = replica_scheduler.on_schedule()
+        # print(f"L2 ReplicaScheduleEvent {self._replica_id}'s self._batches after replica_scheduler.on_schedule(): {self._batches}")
 
         if not self._batches:
             return []
 
         memory_usage_percent = replica_scheduler.memory_usage_percent
+        # print(f"L2 {self._replica_id}'s memory_usage_percent: {memory_usage_percent}")
         metrics_store.on_replica_schedule(
             self.time, self._replica_id, memory_usage_percent
         )
 
         for batch in self._batches:
+            # print(f"L2 {self._replica_id}'s batch {batch.id} on_schedule() called")
             batch.on_schedule(self.time)
 
-        return [
+        res = [
             BatchStageArrivalEvent(
                 self.time,
                 self._replica_id,
@@ -45,6 +48,8 @@ class ReplicaScheduleEvent(BaseEvent):
             )
             for batch in self._batches
         ]
+        # print(f"L2 ReplicaScheduleEvent [BatchStageArrivalEvent] generated: {res} at {self.time}")
+        return res
 
     def to_dict(self):
         return {

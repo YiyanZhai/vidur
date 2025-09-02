@@ -73,7 +73,7 @@ class TraceReplayRequestGenerator(BaseRequestGenerator):
         pd_ratio = (
             self.trace_df["num_prefill_tokens"] / self.trace_df["num_decode_tokens"]
         )
-        logger.debug(
+        logger.info(
             f"Prompt/decode token ratio stats\n:{pd_ratio.describe(percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99])}"
         )
 

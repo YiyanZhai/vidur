@@ -23,15 +23,18 @@ class BatchEndEvent(BaseEvent):
         from vidur.events.replica_schedule_event import ReplicaScheduleEvent
 
         self._batch.on_batch_end(self.time)
+        # print(f"L6 BatchEndEvent of _replica_id {self._replica_id} at {self.time} (_batch/replica_scheduler.on_batch_end)")
         replica_scheduler = scheduler.get_replica_scheduler(self._replica_id)
         replica_scheduler.on_batch_end(self._batch)
 
         memory_usage_percent = replica_scheduler.memory_usage_percent
+        # print(f"L6 _replica_id {self._replica_id}'s memory_usage_percent: {memory_usage_percent}")
         metrics_store.on_batch_end(
             self.time, self._batch, self._replica_id, memory_usage_percent
         )
 
-        return [ReplicaScheduleEvent(self.time, self._replica_id)]
+        res = [ReplicaScheduleEvent(self.time, self._replica_id)]
+        return res
 
     def to_dict(self):
         return {

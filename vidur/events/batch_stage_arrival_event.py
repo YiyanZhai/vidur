@@ -27,13 +27,17 @@ class BatchStageArrivalEvent(BaseEvent):
             self._replica_id, self._stage_id
         ).add_batch(self._batch)
 
-        return [
+        # print(f"L3 BatchStageArrivalEvent added {self._batch.id} to {self._replica_id} at {self.time}")
+
+        res = [
             ReplicaStageScheduleEvent(
                 self.time,
                 self._replica_id,
                 self._stage_id,
             )
         ]
+        # print(f"L3 [ReplicaStageScheduleEvent] generated: {res} at {self.time}")
+        return res
 
     def to_dict(self):
         return {

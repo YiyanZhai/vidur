@@ -46,7 +46,7 @@ class CDFSketch:
         if self._sketch._count == 0:
             return
 
-        logger.debug(
+        logger.info(
             f"{plot_name}: {self._metric_name} stats:"
             f" min: {self._sketch._min},"
             f" max: {self._sketch._max},"

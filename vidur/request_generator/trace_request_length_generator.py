@@ -81,7 +81,7 @@ class TraceRequestLengthGenerator(BaseRequestLengthGenerator):
         pd_distribution = pd_ratio.describe(
             percentiles=[0.25, 0.5, 0.75, 0.9, 0.95, 0.99]
         )
-        logger.debug(f"Prompt/decode token ratio stats\n: {pd_distribution}")
+        logger.info(f"Prompt/decode token ratio stats\n: {pd_distribution}")
 
         # randomly shuffle the df based on the seed
         self.trace_df = self.trace_df.sample(frac=1, random_state=self.config.seed)

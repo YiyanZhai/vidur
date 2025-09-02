@@ -56,3 +56,12 @@ class ReplicaStageScheduler:
         )
 
         return batch, batch_stage, execution_time
+
+    def to_dict(self) -> dict:
+        return {
+            "replica_id": self._replica_id,
+            "stage_id": self._stage_id,
+            "is_last_stage": self._is_last_stage,
+            "batch_queue": [batch.id for batch in self._batch_queue],
+            "is_busy": self._is_busy,
+        }

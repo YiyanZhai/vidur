@@ -84,7 +84,7 @@ class DataSeries:
         if y_name is None:
             y_name = self._y_name
 
-        logger.debug(
+        logger.info(
             f"{plot_name}: {y_name} stats:"
             f" min: {df[y_name].min()},"
             f" max: {df[y_name].max()},"
@@ -109,7 +109,7 @@ class DataSeries:
         if y_name is None:
             y_name = self._y_name
 
-        logger.debug(
+        logger.info(
             f"{plot_name}: {y_name} stats:"
             f" min: {df[y_name].min()},"
             f" max: {df[y_name].max()},"

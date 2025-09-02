@@ -244,7 +244,7 @@ class Request(BaseEntity):
         if self._num_processed_tokens == self.total_tokens:
             self._completed_at = time
             self._completed = True
-            logger.debug(f"Request {self._id} completed at {self._completed_at}")
+            logger.info(f"Request {self._id} completed at {self._completed_at}")
 
     def on_batch_stage_schedule(
         self,
@@ -292,7 +292,7 @@ class Request(BaseEntity):
         }
 
     def restart(self):
-        logger.debug(f"Restarting request {self._id}")
+        logger.info(f"Restarting request {self._id}")
 
         # when we restart the request, we can process all the previously
         # decoded tokens in parallel (i.e., we can prefill all the tokens)

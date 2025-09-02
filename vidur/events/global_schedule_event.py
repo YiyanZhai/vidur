@@ -23,15 +23,19 @@ class GlobalScheduleEvent(BaseEvent):
 
         self._replica_set = set()
         self._request_mapping = scheduler.schedule()
+        # print(f"L1 self._request_mapping after scheduler.schedule(): {self._request_mapping} at {self.time}")
 
         for replica_id, request in self._request_mapping:
             self._replica_set.add(replica_id)
             scheduler.get_replica_scheduler(replica_id).add_request(request)
+            # print(f"L1 Added request {request.id} to replica {replica_id}")
 
-        return [
+        res = [
             ReplicaScheduleEvent(self.time, replica_id)
             for replica_id in self._replica_set
         ]
+        # print(f"L1 [ReplicaScheduleEvent(self.time, replica_id)] generated: {res}")
+        return res
 
     def to_dict(self):
         return {

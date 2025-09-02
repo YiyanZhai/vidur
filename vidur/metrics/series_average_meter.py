@@ -74,7 +74,7 @@ class SeriesAverageMeter:
 
         weighted_mean = self._numer_sum / self._denom_sum
 
-        logger.debug(
+        logger.info(
             f"{name}: {self._y_name} stats:"
             f" min: {self._min_y},"
             f" max: {self._max_y},"
