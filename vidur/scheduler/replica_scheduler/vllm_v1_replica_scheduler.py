@@ -43,7 +43,170 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # The requests that have been scheduled and are being executed
         # by the executor.
         self.scheduled_req_ids: set[str] = set()
+        self._outsourced_req_ids: set[str] = set()
 
+    # ---- Outsourcing hook ----
+    def _maybe_outsource_before_schedule(self, current_time: float) -> None:
+        if not len(self._waiting_queue) and not self._running:
+            return
+
+        print(f"Considering outsourcing: {self._waiting_queue.to_list() if hasattr(self._waiting_queue, 'to_list') else list(self._waiting_queue) + self._running}")
+        
+        if not self._ttft_violation_imminent(current_time):
+            print("No TTFT violation imminent")
+            return
+        
+        candidates = self._collect_outsourcing_candidates()
+        if not candidates:
+            return
+
+        items = [self._knapsack_item_for(r) for r in candidates]
+        budget = self._local_prefill_budget_horizon()
+        print(f"Budget {budget} tokens")
+
+        keep_ids, outsource_ids = self._knapsack_select(items, budget)
+        if outsource_ids:
+            print(f"Outsourcing {(outsource_ids)} requests")
+            self._apply_outsourcing(outsource_ids)
+
+    # ---- Helpers ----
+    def _ttft_violation_imminent(self, now: float) -> bool:
+        head = self._waiting_queue.peek() if len(self._waiting_queue) else None
+        if head is None:
+            return False
+        if head.prefill_slo_time is None:
+            # If no per-request SLO is set, fall back to queue length heuristic.
+            return len(self._waiting_queue) > self._max_micro_batch_size
+        # Estimate TTFT for the head request under FCFS
+        est_ttft = self._estimate_fcfs_ttft(head)
+        print(f"Head req {head.id} est TTFT {est_ttft:.2f}s, deadline at {head.prefill_deadline_at:.2f}, now {now:.2f}")
+        return (head.prefill_deadline_at - now) < est_ttft  # :contentReference[oaicite:11]{index=11}
+
+    def _estimate_fcfs_ttft(self, req: Request) -> float:
+        """
+        Estimate Time-to-First-Token under FCFS assumption:
+        = queueing delay (prefill of earlier requests) + own prefill time.
+        """
+        # Effective prefill throughput per step
+        Sp = 1000
+        # self._config.prefill_tokens_per_sec   # expose this in your config
+        if Sp <= 0:
+            return float("inf")
+
+        # 1) Sum remaining prefill work of all waiting requests *ahead* of this one
+        ahead_prefill = 0
+        for r in self._waiting_queue.to_list():
+            if r.id == req.id:
+                break
+            # account for sunk tokens (processed + cached)
+            cached = self.get_cached_prefill_length(r)
+            processed = r.num_processed_tokens
+            prefill_done = max(processed, cached)
+            rem = max(0, r.num_prefill_tokens - prefill_done)
+            ahead_prefill += rem
+
+        # 2) Own prefill work
+        cached = self.get_cached_prefill_length(req)
+        processed = req.num_processed_tokens
+        prefill_done = max(processed, cached)
+        rem_self = max(0, req.num_prefill_tokens - prefill_done)
+
+        # 3) Convert to seconds
+        est = (ahead_prefill + rem_self) / Sp
+        return est
+
+    def _iter_waiting_requests(self, limit: int | None = None):
+        """
+        Returns a stable snapshot list of waiting requests in FCFS order.
+        Works for FCFSRequestQueue (has .to_list()) and degrades gracefully.
+        """
+        cands: list[Request] = []
+
+        ls = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else list(self._waiting_queue)
+        # Waiting requests (cheap to outsource) — cap to a small multiple of micro-batch size
+        k = min(len(ls), 4 * self._max_micro_batch_size)
+        for r in ls[:k]:
+            cands.append(r)
+
+        # Optionally add running requests that are still in prefill (avoid ejecting those in decode)
+        for r in self._running:
+            if not r.is_prefill_complete:
+                cands.append(r)
+
+        return cands
+
+    def _collect_outsourcing_candidates(self) -> list[Request]:
+        cands = []
+        # Waiting requests (cheap to outsource)
+        ls = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else list(self._waiting_queue)
+        # Waiting requests (cheap to outsource) — cap to a small multiple of micro-batch size
+        k = min(len(ls), 4 * self._max_micro_batch_size)
+        for r in ls[:k]:
+            cands.append(r)
+
+        # Optionally add *running* requests that are still in prefill (avoid decoding-phase ejection)
+        for r in self._running:
+            if not r.is_prefill_complete:  # decoding-phase is bad UX to evict
+                cands.append(r)
+        return cands  # 
+
+    def _knapsack_item_for(self, r: Request):
+        cached = self.get_cached_prefill_length(r)         # prefix reuse (sunk) :contentReference[oaicite:13]{index=13}
+        processed = r.num_processed_tokens                 # sunk compute      :contentReference[oaicite:14]{index=14}
+        prefill_done = max(processed, cached)
+        rem_prefill = max(0, r.num_prefill_tokens - prefill_done)
+        decode_done = max(0, processed - r.num_prefill_tokens)
+        rem_decode = max(0, r.num_decode_tokens - decode_done)
+        alpha = 0.6
+        # self._config.decode_weight_ratio  # expose Sp/Sd or equivalent
+        weight = rem_prefill + alpha * rem_decode
+        value = r.num_prefill_tokens  # or $-savings if you inject API prices
+        print(f"  Knapsack item: req {r.id} weight {weight} value {value} (rem_prefill {rem_prefill} rem_decode {rem_decode})")
+        return {"id": r.id, "weight": max(1, weight), "value": max(1, value)}
+
+    def _local_prefill_budget_horizon(self) -> int:
+        horizon = 2  # look 2 iterations ahead; tuneable
+        return horizon * self._max_micro_batch_size * self._config.chunk_size  # :contentReference[oaicite:15]{index=15}
+
+    def _knapsack_select(self, items, budget):
+        # Greedy by value/weight: keep highest “bang-per-token” locally
+        items = sorted(items, key=lambda x: x["value"]/x["weight"], reverse=True)
+        keep, total = [], 0
+        for it in items:
+            if total + it["weight"] <= budget:
+                keep.append(it["id"])
+                total += it["weight"]
+        keep_set = set(keep)
+        outsource = [it["id"] for it in items if it["id"] not in keep_set]
+        return keep_set, outsource
+
+    def _apply_outsourcing(self, outsource_ids: list[str]) -> None:
+        # 1) Remove from waiting queue
+        if outsource_ids:
+            # Build a filtered deque without outsourced IDs
+            # Take a snapshot of all waiting requests
+            snapshot = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else []
+            # Filter out outsourced
+            kept = [r for r in snapshot if r.id not in outsource_ids]
+            self._waiting_queue.clear()
+            for r in kept:
+                self._waiting_queue.push(r)
+
+        # 2) Preempt running prefill requests if selected
+        new_running = []
+        for r in self._running:
+            if r.id in outsource_ids:
+                # free KV, restart to normalize internal counters, then drop
+                self._kv_cache_manager.free(r)
+                r.restart()  # same behavior as existing preemption path 
+                self._kv_cache_manager.free_block_hashes(r)
+                self.scheduled_req_ids.discard(r.id)
+                self._requests.pop(r.id, None)
+                self._outsourced_req_ids.add(r.id)
+            else:
+                new_running.append(r)
+        self._running = new_running
+        
     @property
     def memory_usage_percent(self) -> float:
         return self._kv_cache_manager.usage * 100

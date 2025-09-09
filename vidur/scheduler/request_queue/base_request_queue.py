@@ -49,3 +49,9 @@ class BaseRequestQueue(ABC):
     @abstractmethod
     def sort(self, requests: Iterable[Request]) -> Deque[Request]:
         pass
+
+
+    @abstractmethod
+    def clear(self) -> None:
+        """Remove all requests from the queue."""
+        pass
