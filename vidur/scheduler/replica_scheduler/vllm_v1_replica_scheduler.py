@@ -1,3 +1,5 @@
+import math
+
 from collections import deque
 from typing import Deque, Dict, List
 
@@ -44,6 +46,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # by the executor.
         self.scheduled_req_ids: set[str] = set()
         self._outsourced_req_ids: set[str] = set()
+        self._knapsack_select = self._knapsack_select_dp_scaled  # or _knapsack_select_greedy or _knapsack_select_dp
 
     # ---- Outsourcing hook ----
     def _maybe_outsource_before_schedule(self, current_time: float) -> None:
@@ -168,7 +171,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         horizon = 2  # look 2 iterations ahead; tuneable
         return horizon * self._max_micro_batch_size * self._config.chunk_size  # :contentReference[oaicite:15]{index=15}
 
-    def _knapsack_select(self, items, budget):
+    def _knapsack_select_greedy(self, items, budget):
         # Greedy by value/weight: keep highest “bang-per-token” locally
         items = sorted(items, key=lambda x: x["value"]/x["weight"], reverse=True)
         keep, total = [], 0
@@ -179,6 +182,163 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         keep_set = set(keep)
         outsource = [it["id"] for it in items if it["id"] not in keep_set]
         return keep_set, outsource
+    
+    def _knapsack_select_dp(self, items, budget):
+        """
+        0/1 knapsack (dynamic programming).
+        items: list[{"id": <hashable>, "weight": int>=1, "value": int>=0}]
+        budget: int >= 0
+        Returns: (keep_set, outsource_ids)
+        """
+        if budget <= 0 or not items:
+            return set(), [it["id"] for it in items]
+
+        n = len(items)
+        # dp[b] = max value achievable with capacity b using items[0..i] (rolling over i)
+        dp = [0] * (budget + 1)
+        # choice[i][b] = True if item i is taken when achieving dp at capacity b
+        choice = [[False] * (budget + 1) for _ in range(n)]
+
+        # Fill DP
+        for i, it in enumerate(items):
+            w = int(it["weight"])
+            v = int(it["value"])
+            if w <= 0:
+                # guard against bad inputs; treat as minimal weight
+                w = 1
+            if w > budget:
+                # can't ever fit; skip updates but keep False in choice
+                continue
+            # iterate backward to avoid reusing item i more than once
+            for b in range(budget, w, -1):
+                if dp[b - w] + v > dp[b]:
+                    dp[b] = dp[b - w] + v
+                    choice[i][b] = True
+            # handle b == w explicitly (range(...) excludes the endpoint)
+            if dp[w] < v:
+                dp[w] = v
+                choice[i][w] = True
+
+        # Reconstruct chosen set (take the best capacity)
+        b = max(range(budget + 1), key=lambda x: dp[x])
+        keep_ids = []
+        for i in range(n - 1, -1, -1):
+            if choice[i][b]:
+                keep_ids.append(items[i]["id"])
+                b -= int(items[i]["weight"]) if items[i]["weight"] > 0 else 1
+
+        keep_set = set(keep_ids)
+        outsource_ids = [it["id"] for it in items if it["id"] not in keep_set]
+        return keep_set, outsource_ids
+
+    def _knapsack_select_dp_scaled(self, items, budget, target_scaled_budget=5000, fallback_threshold=5_000_000):
+        """
+        Scaled 0/1 knapsack DP to handle very large weights/budgets.
+        items: list[{"id": <hashable>, "weight": int>=1, "value": int>=0}]
+        budget: int >= 0  (original units)
+        target_scaled_budget: aim to shrink budget to about this size
+        fallback_threshold: if n * scaled_budget exceeds this, fallback to greedy
+
+        Returns: (keep_set, outsource_ids)
+        """
+        n = len(items)
+        if budget <= 0 or n == 0:
+            return set(), [it["id"] for it in items]
+
+        # --- 1) Choose scale factor so scaled_budget ~ target_scaled_budget
+        # scale >= 1; larger scale -> smaller scaled_budget
+        scale = max(1, math.ceil(budget / max(1, target_scaled_budget)))
+        scaled_budget = max(1, budget // scale)
+
+        # Helper: ceil_div for weights so we don't under-estimate capacity usage
+        def ceil_div(a, b):  # b > 0
+            return (a + b - 1) // b
+
+        # --- 2) Build scaled items
+        scaled_items = []
+        for it in items:
+            w = max(1, int(it["weight"]))
+            v = max(0, int(it["value"]))
+            sw = max(1, ceil_div(w, scale))  # ceil divide to avoid underpacking
+            scaled_items.append({"id": it["id"], "weight": sw, "value": v, "orig_weight": w})
+
+        # --- 3) If DP would be too large, fallback to greedy by value/weight
+        if n * scaled_budget > fallback_threshold:
+            # Greedy approximation as a safety valve
+            ranked = sorted(scaled_items, key=lambda x: x["value"] / x["weight"], reverse=True)
+            keep, total_sw = [], 0
+            for it in ranked:
+                if total_sw + it["weight"] <= scaled_budget:
+                    keep.append(it)
+                    total_sw += it["weight"]
+            keep_ids = set(it["id"] for it in keep)
+            # Repair for original budget (rarely needed)
+            keep_ids = self._repair_for_original_budget(keep_ids, items, budget)
+            outsource_ids = [it["id"] for it in items if it["id"] not in keep_ids]
+            return keep_ids, outsource_ids
+
+        # --- 4) Standard 0/1 knapsack DP on scaled instance
+        dp = [0] * (scaled_budget + 1)
+        choice = [[False] * (scaled_budget + 1) for _ in range(n)]
+
+        for i, it in enumerate(scaled_items):
+            w = it["weight"]
+            v = it["value"]
+            if w > scaled_budget:
+                continue
+            # Backwards iteration for 0/1 knapsack
+            for b in range(scaled_budget, w, -1):
+                if dp[b - w] + v > dp[b]:
+                    dp[b] = dp[b - w] + v
+                    choice[i][b] = True
+            # handle exactly b == w (range excludes endpoint)
+            if dp[w] < v:
+                dp[w] = v
+                choice[i][w] = True
+
+        # Reconstruct selection at best capacity
+        b = max(range(scaled_budget + 1), key=lambda x: dp[x])
+        keep_idx = []
+        for i in range(n - 1, -1, -1):
+            if choice[i][b]:
+                keep_idx.append(i)
+                b -= scaled_items[i]["weight"]
+                if b <= 0:
+                    break
+
+        keep_ids = set(scaled_items[i]["id"] for i in keep_idx)
+
+        # --- 5) Repair step in ORIGINAL units (ensure feasibility w.r.t true budget)
+        keep_ids = self._repair_for_original_budget(keep_ids, items, budget)
+
+        outsource_ids = [it["id"] for it in items if it["id"] not in keep_ids]
+        return keep_ids, outsource_ids
+
+    def _repair_for_original_budget(self, keep_ids, items, budget):
+        """
+        If the scaled solution slightly exceeds the true (unscaled) budget due to ceil rounding,
+        drop items with the worst value/weight ratio until the original budget is satisfied.
+        """
+        # Build list of kept items with original weights/values
+        kept = [it for it in items if it["id"] in keep_ids]
+        total_w = sum(max(1, int(it["weight"])) for it in kept)
+        if total_w <= budget:
+            return keep_ids
+
+        # Sort kept items by "weakness": lowest value/weight first
+        # Drop until within true budget
+        kept_sorted = sorted(
+            kept,
+            key=lambda it: ( (it["value"] / it["weight"]) if it["weight"] > 0 else float('inf') )
+        )
+        keep_ids = set(keep_ids)
+        for it in kept_sorted:
+            if total_w <= budget:
+                break
+            keep_ids.discard(it["id"])
+            total_w -= max(1, int(it["weight"]))
+
+        return keep_ids
 
     def _apply_outsourcing(self, outsource_ids: list[str]) -> None:
         # 1) Remove from waiting queue
