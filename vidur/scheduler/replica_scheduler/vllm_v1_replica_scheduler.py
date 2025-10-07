@@ -45,27 +45,32 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # The requests that have been scheduled and are being executed
         # by the executor.
         self.scheduled_req_ids: set[str] = set()
-        self._outsourced_req_ids: set[str] = set()
-        self._knapsack_select = self._knapsack_select_dp_scaled  # or _knapsack_select_greedy or _knapsack_select_dp
-
+        self._outsourced_req_ids: set[(str, bool)] = set()
+        # self._knapsack_select = self._knapsack_select_fractional
+        # self._knapsack_select = self._knapsack_select_dp
+        self._knapsack_select = self._knapsack_select_dp_scaled
+        # self._knapsack_select = self._sanity_check_randomly_select
+        # self._exist_ttft_violation_ = self._ttft_violation_imminent
+        self._exist_ttft_violation_ = self._ttft_violations_any
+        
     # ---- Outsourcing hook ----
     def _maybe_outsource_before_schedule(self, current_time: float) -> None:
         if not len(self._waiting_queue) and not self._running:
             return
 
-        print(f"Considering outsourcing: {self._waiting_queue.to_list() if hasattr(self._waiting_queue, 'to_list') else list(self._waiting_queue) + self._running}")
-        
-        if not self._ttft_violation_imminent(current_time):
-            print("No TTFT violation imminent")
+        if not self._exist_ttft_violation_(current_time):
+            # print("No TTFT violation imminent")
             return
         
         candidates = self._collect_outsourcing_candidates()
         if not candidates:
             return
 
+        # print(f"Considering outsourcing: {[c.id for c in candidates]}")
+
         items = [self._knapsack_item_for(r) for r in candidates]
         budget = self._local_prefill_budget_horizon()
-        print(f"Budget {budget} tokens")
+        # print(f"Budget {budget} tokens")
 
         keep_ids, outsource_ids = self._knapsack_select(items, budget)
         if outsource_ids:
@@ -73,6 +78,67 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             self._apply_outsourcing(outsource_ids)
 
     # ---- Helpers ----
+    def _ttft_violations_any(self, now: float):
+        """
+        Check EVERY waiting request for imminent TTFT violation under FCFS.
+        Returns: (any_violation: bool, at_risk_ids: set[str])
+        """
+        # Snapshot waiting queue (never iterate the queue object directly)
+        waiting = self._iter_waiting_requests()
+        if not waiting:
+            return False
+
+        # Prefill throughput (tokens/sec) — expose this in your scheduler config
+        # Sp = getattr(self._config, "prefill_tokens_per_sec", None)
+        # if not Sp or Sp <= 0:
+        #     # Can't estimate ⇒ be conservative: no outsourcing trigger here
+        #     return False, set()
+        Sp = 1000
+
+        # Precompute remaining prefill for each request (sunk work + prefix cache)
+        rem_prefill = []
+        for r in waiting:
+            cached = self.get_cached_prefill_length(r)
+            processed = r.num_processed_tokens
+            prefill_done = max(processed, cached)
+            rem = max(0, r.num_prefill_tokens - prefill_done)
+            rem_prefill.append(rem)
+
+        # Prefix sum: work ahead of each request in FCFS order
+        ahead = [0] * len(waiting)
+        acc = 0
+        for i in range(len(waiting)):
+            ahead[i] = acc
+            acc += rem_prefill[i]
+            
+        # print(f"TTFT check at {now:.2f}s: reqs {[r.id for r in waiting]}, rem_prefill {rem_prefill}, ahead {ahead}")
+
+        # Evaluate every request with an SLO; collect those at risk
+        at_risk = set()
+        saw_any_slo = False
+        for i, r in enumerate(waiting):
+            # If no SLO on this request, skip it (you can choose a default heuristic instead)
+            if getattr(r, "prefill_slo_time", None) is None:
+                continue
+            saw_any_slo = True
+
+            est_ttft = (ahead[i] + rem_prefill[i]) / Sp
+            # deadline = queued_at + prefill_slo_time
+            time_left = r.prefill_deadline_at - now  # property is defined when SLO set
+            if est_ttft > time_left:
+                # print(f"  Req {r.id} at risk: est TTFT {est_ttft:.2f}s > time left {time_left:.2f}s (deadline at {r.prefill_deadline_at:.2f})")
+                at_risk.add(r.id)
+
+        # If none had an explicit SLO, fall back to a simple pressure heuristic
+        if not saw_any_slo:
+            # Example heuristic: too many waiting vs micro-batch capacity ⇒ treat as 'at risk'
+            # (Avoid len(self._waiting_queue); work off the snapshot length)
+            if len(waiting) > getattr(self, "_max_micro_batch_size", 1):
+                # mark the first few as at risk to nudge outsourcing
+                at_risk.update(r.id for r in waiting[: self._max_micro_batch_size])
+
+        return (len(at_risk) > 0)
+
     def _ttft_violation_imminent(self, now: float) -> bool:
         head = self._waiting_queue.peek() if len(self._waiting_queue) else None
         if head is None:
@@ -82,7 +148,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             return len(self._waiting_queue) > self._max_micro_batch_size
         # Estimate TTFT for the head request under FCFS
         est_ttft = self._estimate_fcfs_ttft(head)
-        print(f"Head req {head.id} est TTFT {est_ttft:.2f}s, deadline at {head.prefill_deadline_at:.2f}, now {now:.2f}")
+        # print(f"Head req {head.id} est TTFT {est_ttft:.2f}s, deadline at {head.prefill_deadline_at:.2f}, now {now:.2f}")
         return (head.prefill_deadline_at - now) < est_ttft  # :contentReference[oaicite:11]{index=11}
 
     def _estimate_fcfs_ttft(self, req: Request) -> float:
@@ -164,14 +230,14 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # self._config.decode_weight_ratio  # expose Sp/Sd or equivalent
         weight = rem_prefill + alpha * rem_decode
         value = r.num_prefill_tokens  # or $-savings if you inject API prices
-        print(f"  Knapsack item: req {r.id} weight {weight} value {value} (rem_prefill {rem_prefill} rem_decode {rem_decode})")
+        # print(f"  Knapsack item: req {r.id} weight {weight} value {value} (rem_prefill {rem_prefill} rem_decode {rem_decode})")
         return {"id": r.id, "weight": max(1, weight), "value": max(1, value)}
 
     def _local_prefill_budget_horizon(self) -> int:
         horizon = 2  # look 2 iterations ahead; tuneable
         return horizon * self._max_micro_batch_size * self._config.chunk_size  # :contentReference[oaicite:15]{index=15}
 
-    def _knapsack_select_greedy(self, items, budget):
+    def _knapsack_select_fractional(self, items, budget):
         # Greedy by value/weight: keep highest “bang-per-token” locally
         items = sorted(items, key=lambda x: x["value"]/x["weight"], reverse=True)
         keep, total = [], 0
@@ -234,8 +300,8 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
     def _knapsack_select_dp_scaled(self, items, budget, target_scaled_budget=5000, fallback_threshold=5_000_000):
         """
         Scaled 0/1 knapsack DP to handle very large weights/budgets.
-        items: list[{"id": <hashable>, "weight": int>=1, "value": int>=0}]
-        budget: int >= 0  (original units)
+        items: list[{"id": <hashable>, "weight": number>=1, "value": number>=0}]
+        budget: number >= 0  (original units)
         target_scaled_budget: aim to shrink budget to about this size
         fallback_threshold: if n * scaled_budget exceeds this, fallback to greedy
 
@@ -257,15 +323,16 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # --- 2) Build scaled items
         scaled_items = []
         for it in items:
-            w = max(1, int(it["weight"]))
-            v = max(0, int(it["value"]))
+            # Use ceil for weights to avoid underestimating capacity usage
+            w = max(1, math.ceil(float(it["weight"])))
+            v = max(0, int(float(it["value"])))
             sw = max(1, ceil_div(w, scale))  # ceil divide to avoid underpacking
             scaled_items.append({"id": it["id"], "weight": sw, "value": v, "orig_weight": w})
 
         # --- 3) If DP would be too large, fallback to greedy by value/weight
         if n * scaled_budget > fallback_threshold:
             # Greedy approximation as a safety valve
-            ranked = sorted(scaled_items, key=lambda x: x["value"] / x["weight"], reverse=True)
+            ranked = sorted(scaled_items, key=lambda x: x["value"] / max(1, x["weight"]), reverse=True)
             keep, total_sw = [], 0
             for it in ranked:
                 if total_sw + it["weight"] <= scaled_budget:
@@ -300,7 +367,9 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         b = max(range(scaled_budget + 1), key=lambda x: dp[x])
         keep_idx = []
         for i in range(n - 1, -1, -1):
-            if choice[i][b]:
+            if b < 0:
+                break
+            if b <= scaled_budget and choice[i][b]:
                 keep_idx.append(i)
                 b -= scaled_items[i]["weight"]
                 if b <= 0:
@@ -313,6 +382,29 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
 
         outsource_ids = [it["id"] for it in items if it["id"] not in keep_ids]
         return keep_ids, outsource_ids
+    
+    def _sanity_check_randomly_select(self, items, budget):
+        """
+        Sanity check: randomly select items until budget is met.
+        Should be similar to knapsack result on average.
+        """
+        import random
+
+        ids = [it["id"] for it in items]
+        random.shuffle(ids)
+        total_w = 0
+        selected = set()
+        for id in ids:
+            it = next(it for it in items if it["id"] == id)
+            w = max(1, math.ceil(float(it["weight"])))
+            if total_w + w <= budget:
+                selected.add(id)
+                total_w += w
+            if total_w >= budget:
+                break
+        # print(f"Random selection kept {len(selected)}/{len(items)} items")
+        outsource_ids = [it["id"] for it in items if it["id"] not in selected]
+        return selected, outsource_ids
 
     def _repair_for_original_budget(self, keep_ids, items, budget):
         """
@@ -321,7 +413,9 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         """
         # Build list of kept items with original weights/values
         kept = [it for it in items if it["id"] in keep_ids]
-        total_w = sum(max(1, int(it["weight"])) for it in kept)
+        # Use ceil for weights to match the scaling logic
+        total_w = sum(max(1, math.ceil(float(it["weight"]))) for it in kept)
+        
         if total_w <= budget:
             return keep_ids
 
@@ -329,20 +423,23 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # Drop until within true budget
         kept_sorted = sorted(
             kept,
-            key=lambda it: ( (it["value"] / it["weight"]) if it["weight"] > 0 else float('inf') )
+            key=lambda it: ( (float(it["value"]) / max(1, math.ceil(float(it["weight"])))) if float(it["weight"]) > 0 else float('inf') )
         )
+        
         keep_ids = set(keep_ids)
         for it in kept_sorted:
             if total_w <= budget:
                 break
+            item_weight = max(1, math.ceil(float(it["weight"])))
             keep_ids.discard(it["id"])
-            total_w -= max(1, int(it["weight"]))
+            total_w -= item_weight
 
         return keep_ids
 
     def _apply_outsourcing(self, outsource_ids: list[str]) -> None:
         # 1) Remove from waiting queue
         if outsource_ids:
+            self._outsourced_req_ids.update((id, False) for id in outsource_ids)
             # Build a filtered deque without outsourced IDs
             # Take a snapshot of all waiting requests
             snapshot = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else []
@@ -362,7 +459,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                 self._kv_cache_manager.free_block_hashes(r)
                 self.scheduled_req_ids.discard(r.id)
                 self._requests.pop(r.id, None)
-                self._outsourced_req_ids.add(r.id)
+                self._outsourced_req_ids.add((r.id, True))
             else:
                 new_running.append(r)
         self._running = new_running
@@ -524,6 +621,8 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # this step, the total number of scheduled requests can be smaller than
         # len(self.running).
         assert len(scheduled_reqs) <= len(self._running)
+
+        print(f"Replica {self._replica_id} scheduling: running {[r.id for r in self._running]}, waiting {[r.id for r in self._waiting_queue.to_list()] if self._waiting_queue else []}, scheduled {[(request.id, num_scheduled_tokens[request.id]) for request in scheduled_reqs]}, outsourced {len(self._outsourced_req_ids)}, mem {self.memory_usage_percent:.1f}%")
 
         scheduler_output = ReplicaSchedulerOutput(
             (
