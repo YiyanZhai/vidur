@@ -41,3 +41,7 @@ class FCFSRequestQueue(BaseRequestQueue):
 
     def sort(self, requests: Deque[Request]) -> Deque[Request]:
         return deque(sorted(requests, key=lambda x: (x.arrived_at, x.id)))
+
+    def clear(self):
+        self._request_queue.clear()
+        self._num_prefill_tokens = 0

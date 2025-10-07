@@ -20,7 +20,8 @@ def check_scheduled(func):
 def check_has_slo(func):
     def wrapper(self, *args, **kwargs):
         if not self._prefill_slo_time:
-            raise ValueError("Request has no slo set")
+            return None
+            # raise ValueError("Request has no slo set")
         return func(self, *args, **kwargs)
 
     return wrapper
@@ -247,6 +248,8 @@ class Request(BaseEntity):
     @property
     @check_has_slo
     def prefill_deadline_at(self) -> float:
+        if not self._prefill_slo_time:
+            return None
         return self.queued_at + self._prefill_slo_time
 
     @property

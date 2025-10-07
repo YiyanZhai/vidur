@@ -110,6 +110,7 @@ class BaseReplicaScheduler(ABC):
 
     def on_schedule(self, current_time: float) -> ReplicaSchedulerOutput:
         assert self.can_schedule()
+        self._maybe_outsource_before_schedule(current_time)
         replica_scheduler_output = self._get_next_batch(current_time)
         if not replica_scheduler_output.batch:
             return replica_scheduler_output
