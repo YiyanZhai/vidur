@@ -277,10 +277,10 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         for r in ls[:k]:
             cands.append(r)
 
-        # Optionally add running requests that are still in prefill (avoid ejecting those in decode)
-        for r in self._running:
-            if not r.is_prefill_complete:
-                cands.append(r)
+        # # Optionally add running requests that are still in prefill (avoid ejecting those in decode)
+        # for r in self._running:
+        #     if not r.is_prefill_complete:
+        #         cands.append(r)
 
         return cands
 
