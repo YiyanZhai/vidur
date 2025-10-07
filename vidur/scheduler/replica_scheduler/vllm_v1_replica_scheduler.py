@@ -111,12 +111,15 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         if not waiting:
             return False
 
-        # Prefill throughput (tokens/sec) — expose this in your scheduler config
-        # Sp = getattr(self._config, "prefill_tokens_per_sec", None)
-        # if not Sp or Sp <= 0:
-        #     # Can't estimate ⇒ be conservative: no outsourcing trigger here
-        #     return False, set()
-        Sp = 1000
+        # Compute-based estimation: use FLOPs required and device FLOPs/sec
+        # Device FLOPs/sec is available from the RequestFLOPCalculator
+        device_flops_per_sec = getattr(self._flop_calculator, "_device_flops_per_second", None)
+        if not device_flops_per_sec or device_flops_per_sec <= 0:
+            # Can't estimate compute ⇒ be conservative: no outsourcing trigger here
+            return False
+        # Target utilization factor (use 80% as requested)
+        utilization_factor = getattr(self._config, "prefill_slo_utilization", 0.8)
+        effective_device_flops = device_flops_per_sec * utilization_factor
 
         # Precompute remaining prefill for each request (sunk work + prefix cache)
         rem_prefill = []
@@ -127,12 +130,25 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             rem = max(0, r.num_prefill_tokens - prefill_done)
             rem_prefill.append(rem)
 
-        # Prefix sum: work ahead of each request in FCFS order
-        ahead = [0] * len(waiting)
-        acc = 0
+        # Compute FLOPs required to finish remaining prefill for each request
+        rem_prefill_flops = []
+        for idx, r in enumerate(waiting):
+            rem = rem_prefill[idx]
+            if rem <= 0:
+                rem_prefill_flops.append(0.0)
+            else:
+                try:
+                    rem_prefill_flops.append(self._flop_calculator.calculate_request_flops(r, rem))
+                except Exception:
+                    # Fallback: treat as large compute to be conservative
+                    rem_prefill_flops.append(float("inf"))
+
+        # Prefix sum: compute FLOPs ahead of each request in FCFS order
+        ahead_flops = [0.0] * len(waiting)
+        acc_flops = 0.0
         for i in range(len(waiting)):
-            ahead[i] = acc
-            acc += rem_prefill[i]
+            ahead_flops[i] = acc_flops
+            acc_flops += rem_prefill_flops[i]
             
         # print(f"TTFT check at {now:.2f}s: reqs {[r.id for r in waiting]}, rem_prefill {rem_prefill}, ahead {ahead}")
 
@@ -148,8 +164,14 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             if slo_time is None:
                 # Tunable defaults; can be exposed in scheduler config later
                 base_latency = getattr(self._config, "prefill_slo_base_seconds", 0.05)
-                slack_factor = getattr(self._config, "prefill_slo_slack_factor", 1.5)
-                slo_time = base_latency + (r.num_prefill_tokens / max(1, Sp)) * slack_factor
+                slack_factor = getattr(self._config, "prefill_slo_slack_factor", 3)
+                # Use compute-based ETA for this request's remaining prefill FLOPs
+                rem_flops = rem_prefill_flops[i]
+                if rem_flops == float("inf"):
+                    slo_time = float("inf")
+                else:
+                    slo_time = base_latency + (rem_flops / max(1.0, effective_device_flops)) * slack_factor
+                print(f"Req {r.id} no SLO, deriving default slo_time {slo_time:.2f}s, req {r.num_prefill_tokens} tokens, rem_flops {rem_flops:.2f}")
                 # Derive a deadline timestamp if not present. Prefer request.queued_at if available.
                 queued_at = getattr(r, "queued_at", now)
                 # Attach a derived deadline to the request so later logic that expects
@@ -173,7 +195,12 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
 
             saw_any_slo = True
 
-            est_ttft = (ahead[i] + rem_prefill[i]) / Sp
+            # Estimate TTFT based on compute needed (FLOPs) and device capacity
+            total_flops_to_do = ahead_flops[i] + rem_prefill_flops[i]
+            if total_flops_to_do == float("inf"):
+                est_ttft = float("inf")
+            else:
+                est_ttft = total_flops_to_do / max(1.0, effective_device_flops)
             # deadline = queued_at + prefill_slo_time (we either set or derived prefill_deadline_at)
             time_left = getattr(r, "prefill_deadline_at", None) - now if getattr(r, "prefill_deadline_at", None) is not None else slo_time
             if est_ttft > time_left:
@@ -189,7 +216,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                 at_risk.update(r.id for r in waiting[: self._max_micro_batch_size])
 
         res = len(at_risk) > 0
-        print(res)
+        print(at_risk)
         return res
 
     def _ttft_violation_imminent(self, now: float) -> bool:
@@ -526,6 +553,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             self._waiting_queue.clear()
             for r in kept:
                 self._waiting_queue.push(r)
+            print(f"Waiting queue after outsourcing: {[r.id for r in self._waiting_queue.to_list()]}")
 
         # 2) Preempt running prefill requests if selected
         new_running = []
