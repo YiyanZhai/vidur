@@ -108,6 +108,10 @@ class BaseReplicaScheduler(ABC):
     def can_schedule(self) -> bool:
         return self._num_running_batches < self._num_stages
 
+    def _maybe_outsource_before_schedule(self, current_time: float) -> None:
+        """Hook for subclasses to implement outsourcing logic. Default is no-op."""
+        pass
+
     def on_schedule(self, current_time: float) -> ReplicaSchedulerOutput:
         assert self.can_schedule()
         self._maybe_outsource_before_schedule(current_time)

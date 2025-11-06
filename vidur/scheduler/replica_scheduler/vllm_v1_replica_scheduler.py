@@ -46,6 +46,8 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # by the executor.
         self.scheduled_req_ids: set[str] = set()
         self._outsourced_req_ids: set[(str, bool)] = set()
+        # Track outsourced request details for reporting
+        self._outsourced_request_details: List[dict] = []
         # self._knapsack_select = self._knapsack_select_fractional
         # self._knapsack_select = self._knapsack_select_dp
         self._knapsack_select = self._knapsack_select_dp_scaled
@@ -460,9 +462,92 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                 self.scheduled_req_ids.discard(r.id)
                 self._requests.pop(r.id, None)
                 self._outsourced_req_ids.add((r.id, True))
+                # Track this outsourced request
+                self._track_outsourced_request(r, was_running=True)
             else:
                 new_running.append(r)
         self._running = new_running
+        
+        # 3) Track waiting requests that are being outsourced
+        for req_id in outsource_ids:
+            if req_id in [r.id for r in snapshot]:
+                req = next((r for r in snapshot if r.id == req_id), None)
+                if req:
+                    self._track_outsourced_request(req, was_running=False)
+    
+    def _track_outsourced_request(self, request: Request, was_running: bool) -> None:
+        """Track details of an outsourced request for later reporting."""
+        import time as time_module
+        
+        # Calculate API cost (example pricing, adjust as needed)
+        input_tokens = request.num_prefill_tokens
+        output_tokens = request.num_decode_tokens
+        api_cost = self._calculate_api_cost(input_tokens, output_tokens)
+        
+        # Track details
+        self._outsourced_request_details.append({
+            'request_id': request.id,
+            'outsourced_at': time_module.time(),  # Use wall-clock time for tracking
+            'arrived_at': request.arrived_at,
+            'queued_at': request.queued_at,
+            'was_running': was_running,
+            'num_prefill_tokens': input_tokens,
+            'num_decode_tokens': output_tokens,
+            'num_processed_tokens': request.num_processed_tokens,
+            'api_cost_usd': api_cost,
+            'replica_id': self._replica_id,
+        })
+    
+    def _calculate_api_cost(self, input_tokens: int, output_tokens: int) -> float:
+        """
+        Calculate API cost based on token counts.
+        Uses industry-standard pricing as an example:
+        - Input: $0.50 per 1M tokens
+        - Output: $1.50 per 1M tokens
+        
+        Adjust these values based on your actual API pricing.
+        """
+        # Pricing per million tokens (in USD)
+        input_price_per_million = 0.50
+        output_price_per_million = 1.50
+        
+        input_cost = (input_tokens / 1_000_000) * input_price_per_million
+        output_cost = (output_tokens / 1_000_000) * output_price_per_million
+        
+        return input_cost + output_cost
+    
+    def get_outsourced_request_details(self) -> List[dict]:
+        """Return the list of outsourced request details."""
+        return self._outsourced_request_details
+    
+    def get_outsourcing_statistics(self) -> dict:
+        """Calculate and return outsourcing statistics."""
+        if not self._outsourced_request_details:
+            return {
+                'total_outsourced': 0,
+                'outsourced_from_waiting': 0,
+                'outsourced_from_running': 0,
+                'total_api_cost_usd': 0.0,
+                'total_input_tokens': 0,
+                'total_output_tokens': 0,
+            }
+        
+        total = len(self._outsourced_request_details)
+        from_running = sum(1 for d in self._outsourced_request_details if d['was_running'])
+        from_waiting = total - from_running
+        total_cost = sum(d['api_cost_usd'] for d in self._outsourced_request_details)
+        total_input = sum(d['num_prefill_tokens'] for d in self._outsourced_request_details)
+        total_output = sum(d['num_decode_tokens'] for d in self._outsourced_request_details)
+        
+        return {
+            'total_outsourced': total,
+            'outsourced_from_waiting': from_waiting,
+            'outsourced_from_running': from_running,
+            'total_api_cost_usd': total_cost,
+            'total_input_tokens': total_input,
+            'total_output_tokens': total_output,
+            'replica_id': self._replica_id,
+        }
         
     @property
     def memory_usage_percent(self) -> float:

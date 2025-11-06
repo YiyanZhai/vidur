@@ -238,6 +238,9 @@ class ReplicaMetricsStore:
             )
             self._replica_mfu[stage_idx].put(0, 0)
 
+        # Track running requests for CSV export
+        self._running_request_events: List[dict] = []
+
     @if_write_metrics
     def on_request_arrival(self, request: Request) -> None:
         if not self._config.store_request_metrics:
@@ -542,6 +545,21 @@ class ReplicaMetricsStore:
             if self._config.keep_individual_batch_metrics:
                 self._replica_memory_usage_per_batch.put(time, memory_usage_percent)
 
+        # Track running request events
+        for request in batch.requests:
+            self._running_request_events.append({
+                'request_id': request.id,
+                'event_time': time,
+                'event_type': 'batch_end',
+                'replica_id': self._replica_id,
+                'batch_id': batch.id,
+                'num_processed_tokens': request.num_processed_tokens,
+                'num_prefill_tokens': request.num_prefill_tokens,
+                'num_decode_tokens': request.num_decode_tokens,
+                'is_prefill_complete': request.is_prefill_complete,
+                'completed': request.completed,
+            })
+
         for request in batch.requests:
             self._update_per_token_execution_times(time, request, batch)
 
@@ -666,6 +684,10 @@ class ReplicaMetricsStore:
             self._cpu_operation_metrics_per_batch.values()
         )
         return self.get_merged_df(all_operation_metrics, BATCH_ID_STR)
+    
+    def get_running_request_events(self) -> List[dict]:
+        """Return the list of running request events."""
+        return self._running_request_events
 
     def get_replica_busy_time(self):
         replica_busy_time_dict = {}

@@ -172,6 +172,76 @@ class ClusterMetricsStore:
                     save_plot=self._config.store_plots,
                 )
 
+    def _store_outsourcing_metrics(self, base_plot_path: str):
+        """Store outsourcing statistics and details."""
+        # Collect outsourcing statistics from all replicas
+        outsourcing_stats = {}
+        all_outsourced_details = []
+        
+        for replica_id, replica in self._replicas.items():
+            # Check if replica scheduler has outsourcing methods
+            if hasattr(replica._scheduler, 'get_outsourcing_statistics'):
+                stats = replica._scheduler.get_outsourcing_statistics()
+                outsourcing_stats[str(replica_id)] = stats
+                
+                # Collect detailed outsourced request information
+                if hasattr(replica._scheduler, 'get_outsourced_request_details'):
+                    details = replica._scheduler.get_outsourced_request_details()
+                    all_outsourced_details.extend(details)
+        
+        # Save outsourcing statistics as JSON
+        if outsourcing_stats:
+            self._save_as_json(
+                data=outsourcing_stats,
+                base_path=base_plot_path,
+                file_name="outsourcing_statistics",
+            )
+            
+            # Calculate and save cluster-wide statistics
+            cluster_stats = {
+                'total_outsourced': sum(s['total_outsourced'] for s in outsourcing_stats.values()),
+                'total_api_cost_usd': sum(s['total_api_cost_usd'] for s in outsourcing_stats.values()),
+                'total_input_tokens': sum(s['total_input_tokens'] for s in outsourcing_stats.values()),
+                'total_output_tokens': sum(s['total_output_tokens'] for s in outsourcing_stats.values()),
+                'outsourced_from_waiting': sum(s['outsourced_from_waiting'] for s in outsourcing_stats.values()),
+                'outsourced_from_running': sum(s['outsourced_from_running'] for s in outsourcing_stats.values()),
+            }
+            
+            self._save_as_json(
+                data=cluster_stats,
+                base_path=base_plot_path,
+                file_name="cluster_outsourcing_statistics",
+            )
+        
+        # Save detailed outsourced request information as CSV
+        if all_outsourced_details:
+            outsourced_df = pd.DataFrame(all_outsourced_details)
+            self._save_as_csv(
+                df=outsourced_df,
+                base_path=self._config.output_dir,
+                file_name="outsourced_requests",
+            )
+
+    def _store_running_request_events(self, base_plot_path: str):
+        """Store running request execution events."""
+        all_running_events = []
+        
+        for replica_id, store in self._replica_metric_stores.items():
+            if hasattr(store, 'get_running_request_events'):
+                events = store.get_running_request_events()
+                all_running_events.extend(events)
+        
+        # Save running request events as CSV
+        if all_running_events:
+            running_df = pd.DataFrame(all_running_events)
+            # Sort by event time for better readability
+            running_df.sort_values(by='event_time', inplace=True)
+            self._save_as_csv(
+                df=running_df,
+                base_path=self._config.output_dir,
+                file_name="running_requests",
+            )
+
     def _store_batch_metrics(self, base_plot_path: str):
         if not self._config.store_batch_metrics:
             return
@@ -352,6 +422,8 @@ class ClusterMetricsStore:
         self._store_token_metrics(dir_plot_path)
         self._store_operation_metrics(dir_plot_path)
         self._store_utilization_metrics(dir_plot_path)
+        self._store_outsourcing_metrics(dir_plot_path)
+        self._store_running_request_events(dir_plot_path)
 
     def on_batch_end(
         self, time: float, batch, replica_id: ReplicaId, memory_usage_percent: float
