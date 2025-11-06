@@ -5,6 +5,7 @@ from typing import Deque, Dict, List
 
 from vidur.entities.batch import Batch, Request
 from vidur.kv_cache.replica_kv_cache_manager import ReplicaKVCacheManager
+from vidur.logger import init_logger
 from vidur.scheduler.replica_scheduler.base_replica_scheduler import (
     BaseReplicaScheduler,
 )
@@ -12,6 +13,8 @@ from vidur.scheduler.replica_scheduler.replica_scheduler_output import (
     ReplicaSchedulerOutput,
 )
 from vidur.types.request_queue_type import RequestQueueType
+
+logger = init_logger(__name__)
 
 
 class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
@@ -45,57 +48,116 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # The requests that have been scheduled and are being executed
         # by the executor.
         self.scheduled_req_ids: set[str] = set()
-        self._outsourced_req_ids: set[(str, bool)] = set()
-        # Track outsourced request details for reporting
-        self._outsourced_request_details: List[dict] = []
-        # self._knapsack_select = self._knapsack_select_fractional
-        # self._knapsack_select = self._knapsack_select_dp
-        self._knapsack_select = self._knapsack_select_dp_scaled
-        # self._knapsack_select = self._sanity_check_randomly_select
-        # self._exist_ttft_violation_ = self._ttft_violation_imminent
-        self._exist_ttft_violation_ = self._ttft_violations_any
         
-    # ---- Outsourcing hook ----
+        # Outsourcing state
+        self._outsourced_req_ids: set[str] = set()
+        self._outsourced_request_details: List[dict] = []
+        
+        # Initialize outsourcing configuration
+        self._init_outsourcing_config()
+    
+    # ==================== Configuration & Initialization ====================
+        
+    def _init_outsourcing_config(self):
+        """Initialize outsourcing-related configuration parameters."""
+        # Throughput estimates (tokens/sec)
+        self._prefill_throughput = getattr(
+            self._config, 'prefill_tokens_per_sec', 1000
+        )
+        
+        # Weight ratio for decode vs prefill in knapsack
+        self._decode_weight_ratio = getattr(
+            self._config, 'decode_weight_ratio', 0.6
+        )
+        
+        # Budget horizon (iterations to look ahead)
+        self._budget_horizon = getattr(
+            self._config, 'budget_horizon_iterations', 2
+        )
+        
+        # # Candidate queue multiplier
+        # self._max_candidate_multiplier = getattr(
+        #     self._config, 'candidate_queue_multiplier', 4
+        # )
+        
+        # Knapsack selection strategy
+        strategy = getattr(self._config, 'knapsack_strategy', 'dp_scaled')
+        self._knapsack_select = self._get_knapsack_strategy(strategy)
+        
+        # TTFT violation detection mode
+        violation_mode = getattr(self._config, 'ttft_violation_mode', 'all')
+        self._exist_ttft_violation_ = self._get_violation_detector(violation_mode)
+        
+        # Debug logging flag
+        self._debug_outsourcing = getattr(
+            self._config, 'debug_outsourcing', False
+        )
+    
+    def _get_knapsack_strategy(self, strategy: str):
+        """Get the knapsack selection function based on strategy name."""
+        strategies = {
+            'fractional': self._knapsack_select_fractional,
+            'dp': self._knapsack_select_dp,
+            'dp_scaled': self._knapsack_select_dp_scaled,
+            'random': self._sanity_check_randomly_select,
+        }
+        if strategy not in strategies:
+            raise ValueError(f"Unknown knapsack strategy: {strategy}. "
+                           f"Choose from: {list(strategies.keys())}")
+        return strategies[strategy]
+    
+    def _get_violation_detector(self, mode: str):
+        """Get the TTFT violation detection function based on mode."""
+        detectors = {
+            'all': self._ttft_violations_any,
+            'head': self._ttft_violation_imminent,
+        }
+        if mode not in detectors:
+            raise ValueError(f"Unknown TTFT violation mode: {mode}. "
+                           f"Choose from: {list(detectors.keys())}")
+        return detectors[mode]
+        
+    # ==================== Outsourcing Orchestration ====================
+    
     def _maybe_outsource_before_schedule(self, current_time: float) -> None:
+        """Main outsourcing decision hook called before each scheduling step."""
         if not len(self._waiting_queue) and not self._running:
             return
 
         if not self._exist_ttft_violation_(current_time):
-            # print("No TTFT violation imminent")
             return
+        
+        if self._debug_outsourcing:
+            logger.debug(f"[Replica {self._replica_id}] TTFT violation detected at t={current_time:.2f}")
         
         candidates = self._collect_outsourcing_candidates()
         if not candidates:
+            if self._debug_outsourcing:
+                logger.debug(f"[Replica {self._replica_id}] No outsourcing candidates found")
             return
-
-        # print(f"Considering outsourcing: {[c.id for c in candidates]}")
 
         items = [self._knapsack_item_for(r) for r in candidates]
         budget = self._local_prefill_budget_horizon()
-        # print(f"Budget {budget} tokens")
 
         keep_ids, outsource_ids = self._knapsack_select(items, budget)
         if outsource_ids:
-            # print(f"Outsourcing {(outsource_ids)} requests")
-            self._apply_outsourcing(outsource_ids)
+            if self._debug_outsourcing:
+                logger.debug(f"[Replica {self._replica_id}] Outsourcing {len(outsource_ids)} requests: {outsource_ids}")
+            self._apply_outsourcing(outsource_ids, current_time)
 
-    # ---- Helpers ----
-    def _ttft_violations_any(self, now: float):
+    # ==================== TTFT Violation Detection ====================
+    
+    def _ttft_violations_any(self, now: float) -> bool:
         """
         Check EVERY waiting request for imminent TTFT violation under FCFS.
-        Returns: (any_violation: bool, at_risk_ids: set[str])
+        Returns True if any request is at risk of SLO violation.
         """
-        # Snapshot waiting queue (never iterate the queue object directly)
-        waiting = self._iter_waiting_requests()
+        waiting = self._collect_outsourcing_candidates()
         if not waiting:
             return False
 
-        # Prefill throughput (tokens/sec) — expose this in your scheduler config
-        # Sp = getattr(self._config, "prefill_tokens_per_sec", None)
-        # if not Sp or Sp <= 0:
-        #     # Can't estimate ⇒ be conservative: no outsourcing trigger here
-        #     return False, set()
-        Sp = 1000
+        # Use configured prefill throughput TODO: make dynamic
+        Sp = self._prefill_throughput
 
         # Precompute remaining prefill for each request (sunk work + prefix cache)
         rem_prefill = []
@@ -113,131 +175,125 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             ahead[i] = acc
             acc += rem_prefill[i]
             
-        # print(f"TTFT check at {now:.2f}s: reqs {[r.id for r in waiting]}, rem_prefill {rem_prefill}, ahead {ahead}")
-
         # Evaluate every request with an SLO; collect those at risk
         at_risk = set()
         saw_any_slo = False
         for i, r in enumerate(waiting):
-            # If no SLO on this request, skip it (you can choose a default heuristic instead)
             if getattr(r, "prefill_slo_time", None) is None:
                 continue
             saw_any_slo = True
 
             est_ttft = (ahead[i] + rem_prefill[i]) / Sp
-            # deadline = queued_at + prefill_slo_time
-            time_left = r.prefill_deadline_at - now  # property is defined when SLO set
+            time_left = r.prefill_deadline_at - now
             if est_ttft > time_left:
-                # print(f"  Req {r.id} at risk: est TTFT {est_ttft:.2f}s > time left {time_left:.2f}s (deadline at {r.prefill_deadline_at:.2f})")
                 at_risk.add(r.id)
 
         # If none had an explicit SLO, fall back to a simple pressure heuristic
         if not saw_any_slo:
-            # Example heuristic: too many waiting vs micro-batch capacity ⇒ treat as 'at risk'
-            # (Avoid len(self._waiting_queue); work off the snapshot length)
-            if len(waiting) > getattr(self, "_max_micro_batch_size", 1):
-                # mark the first few as at risk to nudge outsourcing
-                at_risk.update(r.id for r in waiting[: self._max_micro_batch_size])
+            if len(waiting) > self._max_micro_batch_size:
+                at_risk.update(r.id for r in waiting[:self._max_micro_batch_size])
 
-        return (len(at_risk) > 0)
+        return len(at_risk) > 0
 
     def _ttft_violation_imminent(self, now: float) -> bool:
+        """
+        Check if the head request has imminent TTFT violation.
+        Returns True if head request is at risk of SLO violation.
+        """
         head = self._waiting_queue.peek() if len(self._waiting_queue) else None
         if head is None:
             return False
         if head.prefill_slo_time is None:
-            # If no per-request SLO is set, fall back to queue length heuristic.
+            # Fallback to queue length heuristic
             return len(self._waiting_queue) > self._max_micro_batch_size
-        # Estimate TTFT for the head request under FCFS
+        
         est_ttft = self._estimate_fcfs_ttft(head)
-        # print(f"Head req {head.id} est TTFT {est_ttft:.2f}s, deadline at {head.prefill_deadline_at:.2f}, now {now:.2f}")
-        return (head.prefill_deadline_at - now) < est_ttft  # :contentReference[oaicite:11]{index=11}
+        return (head.prefill_deadline_at - now) < est_ttft
 
     def _estimate_fcfs_ttft(self, req: Request) -> float:
         """
-        Estimate Time-to-First-Token under FCFS assumption:
-        = queueing delay (prefill of earlier requests) + own prefill time.
+        Estimate Time-to-First-Token under FCFS assumption.
+        Returns: queueing delay + own prefill time (in seconds).
         """
-        # Effective prefill throughput per step
-        Sp = 1000
-        # self._config.prefill_tokens_per_sec   # expose this in your config
+        Sp = self._prefill_throughput
         if Sp <= 0:
             return float("inf")
 
-        # 1) Sum remaining prefill work of all waiting requests *ahead* of this one
+        # Sum remaining prefill work of all waiting requests ahead of this one
         ahead_prefill = 0
         for r in self._waiting_queue.to_list():
             if r.id == req.id:
                 break
-            # account for sunk tokens (processed + cached)
             cached = self.get_cached_prefill_length(r)
             processed = r.num_processed_tokens
             prefill_done = max(processed, cached)
             rem = max(0, r.num_prefill_tokens - prefill_done)
             ahead_prefill += rem
 
-        # 2) Own prefill work
+        # Own prefill work
         cached = self.get_cached_prefill_length(req)
         processed = req.num_processed_tokens
         prefill_done = max(processed, cached)
         rem_self = max(0, req.num_prefill_tokens - prefill_done)
 
-        # 3) Convert to seconds
+        # Convert to seconds
         est = (ahead_prefill + rem_self) / Sp
         return est
-
-    def _iter_waiting_requests(self, limit: int | None = None):
+    
+    # ==================== Candidate Collection ====================
+    
+    def _collect_outsourcing_candidates(self) -> list[Request]:
         """
-        Returns a stable snapshot list of waiting requests in FCFS order.
-        Works for FCFSRequestQueue (has .to_list()) and degrades gracefully.
+        Collect requests eligible for outsourcing.
+        Includes: waiting requests (up to queue multiplier limit) + running prefill requests.
+        Excludes: already outsourced, currently scheduled, or in decode phase.
         """
-        cands: list[Request] = []
-
+        cands = []
+        
+        # Get waiting requests (cheap to outsource)
         ls = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else list(self._waiting_queue)
-        # Waiting requests (cheap to outsource) — cap to a small multiple of micro-batch size
-        k = min(len(ls), 4 * self._max_micro_batch_size)
+        # k = min(len(ls), self._max_candidate_multiplier * self._max_micro_batch_size)
+        k = len(ls)
         for r in ls[:k]:
-            cands.append(r)
-
-        # Optionally add running requests that are still in prefill (avoid ejecting those in decode)
-        for r in self._running:
-            if not r.is_prefill_complete:
+            if r.id not in self._outsourced_req_ids:
                 cands.append(r)
 
+        # Add running prefill requests (avoid decode-phase ejection)
+        for r in self._running:
+            if (not r.is_prefill_complete and 
+                r.id not in self._outsourced_req_ids and
+                r.id not in self.scheduled_req_ids):
+                cands.append(r)
+        
         return cands
 
-    def _collect_outsourcing_candidates(self) -> list[Request]:
-        cands = []
-        # Waiting requests (cheap to outsource)
-        ls = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else list(self._waiting_queue)
-        # Waiting requests (cheap to outsource) — cap to a small multiple of micro-batch size
-        k = min(len(ls), 4 * self._max_micro_batch_size)
-        for r in ls[:k]:
-            cands.append(r)
-
-        # Optionally add *running* requests that are still in prefill (avoid decoding-phase ejection)
-        for r in self._running:
-            if not r.is_prefill_complete:  # decoding-phase is bad UX to evict
-                cands.append(r)
-        return cands  # 
-
-    def _knapsack_item_for(self, r: Request):
-        cached = self.get_cached_prefill_length(r)         # prefix reuse (sunk) :contentReference[oaicite:13]{index=13}
-        processed = r.num_processed_tokens                 # sunk compute      :contentReference[oaicite:14]{index=14}
+    # ==================== Knapsack Optimization ====================
+    
+    def _knapsack_item_for(self, r: Request) -> dict:
+        """
+        Convert a request into a knapsack item.
+        Weight: remaining work (prefill + weighted decode)
+        Value: cost savings from keeping local (API cost avoided)
+        """
+        cached = self.get_cached_prefill_length(r)
+        processed = r.num_processed_tokens
         prefill_done = max(processed, cached)
         rem_prefill = max(0, r.num_prefill_tokens - prefill_done)
         decode_done = max(0, processed - r.num_prefill_tokens)
         rem_decode = max(0, r.num_decode_tokens - decode_done)
-        alpha = 0.6
-        # self._config.decode_weight_ratio  # expose Sp/Sd or equivalent
-        weight = rem_prefill + alpha * rem_decode
-        value = r.num_prefill_tokens  # or $-savings if you inject API prices
-        # print(f"  Knapsack item: req {r.id} weight {weight} value {value} (rem_prefill {rem_prefill} rem_decode {rem_decode})")
+        
+        # Weight = remaining work (normalized by decode ratio)
+        weight = rem_prefill + self._decode_weight_ratio * rem_decode
+        
+        # Value = cost savings from NOT outsourcing (API cost avoided)
+        api_cost = self._calculate_api_cost(rem_prefill, rem_decode)
+        value = int(api_cost * 1000)  # Scale to avoid float issues in DP
+        
         return {"id": r.id, "weight": max(1, weight), "value": max(1, value)}
 
     def _local_prefill_budget_horizon(self) -> int:
-        horizon = 2  # look 2 iterations ahead; tuneable
-        return horizon * self._max_micro_batch_size * self._config.chunk_size  # :contentReference[oaicite:15]{index=15}
+        """Calculate the local budget for prefill work over the next horizon iterations."""
+        return self._budget_horizon * self._max_micro_batch_size * self._config.chunk_size
 
     def _knapsack_select_fractional(self, items, budget):
         # Greedy by value/weight: keep highest “bang-per-token” locally
@@ -437,48 +493,58 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             total_w -= item_weight
 
         return keep_ids
+    
+    # ==================== Request Removal & Tracking ====================
 
-    def _apply_outsourcing(self, outsource_ids: list[str]) -> None:
-        # 1) Remove from waiting queue
-        if outsource_ids:
-            self._outsourced_req_ids.update((id, False) for id in outsource_ids)
-            # Build a filtered deque without outsourced IDs
-            # Take a snapshot of all waiting requests
-            snapshot = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else []
-            # Filter out outsourced
-            kept = [r for r in snapshot if r.id not in outsource_ids]
-            self._waiting_queue.clear()
-            for r in kept:
-                self._waiting_queue.push(r)
+    def _apply_outsourcing(self, outsource_ids: list[str], current_time: float) -> None:
+        """
+        Remove outsourced requests from waiting queue and running list.
+        Optimized with O(n) set lookup instead of nested loops.
+        """
+        if not outsource_ids:
+            return
+        
+        outsource_set = set(outsource_ids)
+        waiting_count = 0
+        running_count = 0
+        
+        # 1) Remove from waiting queue and track
+        snapshot = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else []
+        kept = []
+        for r in snapshot:
+            if r.id in outsource_set:
+                self._outsourced_req_ids.add(r.id)
+                self._track_outsourced_request(r, was_running=False, current_time=current_time)
+                waiting_count += 1
+            else:
+                kept.append(r)
+        
+        self._waiting_queue.clear()
+        for r in kept:
+            self._waiting_queue.push(r)
 
         # 2) Preempt running prefill requests if selected
         new_running = []
         for r in self._running:
-            if r.id in outsource_ids:
-                # free KV, restart to normalize internal counters, then drop
+            if r.id in outsource_set:
+                # Free KV, restart to normalize internal counters, then drop
                 self._kv_cache_manager.free(r)
-                r.restart()  # same behavior as existing preemption path 
+                r.restart()
                 self._kv_cache_manager.free_block_hashes(r)
                 self.scheduled_req_ids.discard(r.id)
                 self._requests.pop(r.id, None)
-                self._outsourced_req_ids.add((r.id, True))
-                # Track this outsourced request
-                self._track_outsourced_request(r, was_running=True)
+                self._outsourced_req_ids.add(r.id)
+                self._track_outsourced_request(r, was_running=True, current_time=current_time)
+                running_count += 1
             else:
                 new_running.append(r)
         self._running = new_running
         
-        # 3) Track waiting requests that are being outsourced
-        for req_id in outsource_ids:
-            if req_id in [r.id for r in snapshot]:
-                req = next((r for r in snapshot if r.id == req_id), None)
-                if req:
-                    self._track_outsourced_request(req, was_running=False)
+        if self._debug_outsourcing:
+            logger.debug(f"[Replica {self._replica_id}] Outsourced {waiting_count} waiting + {running_count} running requests")
     
-    def _track_outsourced_request(self, request: Request, was_running: bool) -> None:
+    def _track_outsourced_request(self, request: Request, was_running: bool, current_time: float) -> None:
         """Track details of an outsourced request for later reporting."""
-        import time as time_module
-        
         # Calculate API cost (example pricing, adjust as needed)
         input_tokens = request.num_prefill_tokens
         output_tokens = request.num_decode_tokens
@@ -487,7 +553,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # Track details
         self._outsourced_request_details.append({
             'request_id': request.id,
-            'outsourced_at': time_module.time(),  # Use wall-clock time for tracking
+            'outsourced_at': current_time,  # Use simulation time
             'arrived_at': request.arrived_at,
             'queued_at': request.queued_at,
             'was_running': was_running,
@@ -501,9 +567,6 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
     def _calculate_api_cost(self, input_tokens: int, output_tokens: int) -> float:
         """
         Calculate API cost based on token counts.
-        Uses industry-standard pricing as an example:
-        - Input: $0.50 per 1M tokens
-        - Output: $1.50 per 1M tokens
         
         Adjust these values based on your actual API pricing.
         """
@@ -515,6 +578,8 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         output_cost = (output_tokens / 1_000_000) * output_price_per_million
         
         return input_cost + output_cost
+    
+    # ==================== Public API for Metrics Collection ====================
     
     def get_outsourced_request_details(self) -> List[dict]:
         """Return the list of outsourced request details."""

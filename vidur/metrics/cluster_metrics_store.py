@@ -207,26 +207,36 @@ class ClusterMetricsStore:
             )
             
             # Calculate hypothetical cost if all requests were outsourced
-            # Get all request metrics to calculate total tokens
+            # Get all request metrics to calculate total tokens across ALL requests (including outsourced)
             total_prefill_tokens = 0
             total_decode_tokens = 0
-            total_requests = 0
+            total_requests_completed_locally = 0
             
+            # First, get tokens from locally completed requests
             for replica_id, store in self._replica_metric_stores.items():
                 # Get request metrics dataframe
                 request_df = store.get_request_metrics_df()
                 if not request_df.empty:
                     # Sum up tokens from all requests
-                    if 'Request Prefill Tokens' in request_df.columns:
-                        total_prefill_tokens += request_df['Request Prefill Tokens'].sum()
-                    if 'Request Decode Tokens' in request_df.columns:
-                        total_decode_tokens += request_df['Request Decode Tokens'].sum()
-                    total_requests += len(request_df)
+                    if 'request_num_prefill_tokens' in request_df.columns:
+                        total_prefill_tokens += request_df['request_num_prefill_tokens'].sum()
+                    if 'request_num_decode_tokens' in request_df.columns:
+                        total_decode_tokens += request_df['request_num_decode_tokens'].sum()
+                    total_requests_completed_locally += len(request_df)
             
-            # Calculate hypothetical API cost using same pricing model
-            # Input: $0.50 per 1M tokens, Output: $1.50 per 1M tokens
-            input_price_per_million = 0.50
-            output_price_per_million = 1.50
+            # Add tokens from outsourced requests
+            outsourced_prefill_tokens = sum(s['total_input_tokens'] for s in outsourcing_stats.values())
+            outsourced_decode_tokens = sum(s['total_output_tokens'] for s in outsourcing_stats.values())
+            outsourced_count = sum(s['total_outsourced'] for s in outsourcing_stats.values())
+            
+            total_prefill_tokens += outsourced_prefill_tokens
+            total_decode_tokens += outsourced_decode_tokens
+            total_requests = total_requests_completed_locally + outsourced_count
+            
+            # Calculate hypothetical OpenAI API cost using same pricing model (for ChatGPT-5)
+            # Input: $1.25 per 1M tokens, Output: $10.00 per 1M tokens
+            input_price_per_million = 1.25
+            output_price_per_million = 10.00
             
             hypothetical_total_cost = (
                 (total_prefill_tokens / 1_000_000) * input_price_per_million +
@@ -269,6 +279,160 @@ class ClusterMetricsStore:
                 base_path=self._config.output_dir,
                 file_name="outsourced_requests",
             )
+            
+            # Plot token distribution histograms comparing outsourced vs local requests
+            self._plot_token_distribution_comparison(base_plot_path, all_outsourced_details)
+
+    def _plot_token_distribution_comparison(self, base_plot_path: str, outsourced_details: List[dict]):
+        """Plot histograms comparing token distributions between outsourced and local requests."""
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError:
+            # matplotlib not available, skip plotting
+            return
+        
+        if not self._config.store_plots:
+            return
+            
+        # Collect local request data
+        local_prefill_tokens = []
+        local_decode_tokens = []
+        
+        for replica_id, store in self._replica_metric_stores.items():
+            request_df = store.get_request_metrics_df()
+            print("request_df in plotting:", request_df)
+            if not request_df.empty:
+                if 'request_num_prefill_tokens' in request_df.columns:
+                    local_prefill_tokens.extend(request_df['request_num_prefill_tokens'].tolist())
+                if 'request_num_decode_tokens' in request_df.columns:
+                    local_decode_tokens.extend(request_df['request_num_decode_tokens'].tolist())
+        
+        # Collect outsourced request data
+        outsourced_prefill_tokens = [d['num_prefill_tokens'] for d in outsourced_details]
+        outsourced_decode_tokens = [d['num_decode_tokens'] for d in outsourced_details]
+        
+        # Only plot if we have data
+        if not (local_prefill_tokens or outsourced_prefill_tokens):
+            return
+        
+        # Create figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Plot 1: Prefill Tokens
+        if local_prefill_tokens or outsourced_prefill_tokens:
+            bins = np.linspace(
+                min((min(local_prefill_tokens) if local_prefill_tokens else float('inf')),
+                    (min(outsourced_prefill_tokens) if outsourced_prefill_tokens else float('inf'))),
+                max((max(local_prefill_tokens) if local_prefill_tokens else 0),
+                    (max(outsourced_prefill_tokens) if outsourced_prefill_tokens else 0)),
+                50
+            )
+            
+            if local_prefill_tokens:
+                ax1.hist(local_prefill_tokens, bins=bins, alpha=0.6, label=f'Local (n={len(local_prefill_tokens)})', color='blue', edgecolor='black')
+            if outsourced_prefill_tokens:
+                ax1.hist(outsourced_prefill_tokens, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_prefill_tokens)})', color='red', edgecolor='black')
+            
+            ax1.set_xlabel('Number of Prefill Tokens', fontsize=12)
+            ax1.set_ylabel('Frequency', fontsize=12)
+            ax1.set_title('Distribution of Prefill Tokens: Local vs Outsourced Requests', fontsize=14, fontweight='bold')
+            ax1.legend(fontsize=10)
+            ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Decode Tokens
+        if local_decode_tokens or outsourced_decode_tokens:
+            bins = np.linspace(
+                min((min(local_decode_tokens) if local_decode_tokens else float('inf')),
+                    (min(outsourced_decode_tokens) if outsourced_decode_tokens else float('inf'))),
+                max((max(local_decode_tokens) if local_decode_tokens else 0),
+                    (max(outsourced_decode_tokens) if outsourced_decode_tokens else 0)),
+                50
+            )
+            
+            if local_decode_tokens:
+                ax2.hist(local_decode_tokens, bins=bins, alpha=0.6, label=f'Local (n={len(local_decode_tokens)})', color='blue', edgecolor='black')
+            if outsourced_decode_tokens:
+                ax2.hist(outsourced_decode_tokens, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_decode_tokens)})', color='red', edgecolor='black')
+            
+            ax2.set_xlabel('Number of Decode Tokens', fontsize=12)
+            ax2.set_ylabel('Frequency', fontsize=12)
+            ax2.set_title('Distribution of Decode Tokens: Local vs Outsourced Requests', fontsize=14, fontweight='bold')
+            ax2.legend(fontsize=10)
+            ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save the figure
+        plot_path = f"{base_plot_path}/token_distribution_comparison.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Also create individual plots for better detail
+        self._plot_individual_token_histograms(base_plot_path, local_prefill_tokens, local_decode_tokens,
+                                               outsourced_prefill_tokens, outsourced_decode_tokens)
+    
+    def _plot_individual_token_histograms(self, base_plot_path: str, 
+                                         local_prefill: List, local_decode: List,
+                                         outsourced_prefill: List, outsourced_decode: List):
+        """Create individual histogram plots for each token type."""
+        try:
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError:
+            return
+        
+        # Prefill tokens only
+        if local_prefill or outsourced_prefill:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            bins = np.linspace(
+                min((min(local_prefill) if local_prefill else float('inf')),
+                    (min(outsourced_prefill) if outsourced_prefill else float('inf'))),
+                max((max(local_prefill) if local_prefill else 0),
+                    (max(outsourced_prefill) if outsourced_prefill else 0)),
+                50
+            )
+            
+            if local_prefill:
+                ax.hist(local_prefill, bins=bins, alpha=0.6, label=f'Local (n={len(local_prefill)}, mean={np.mean(local_prefill):.0f})', color='blue', edgecolor='black')
+            if outsourced_prefill:
+                ax.hist(outsourced_prefill, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_prefill)}, mean={np.mean(outsourced_prefill):.0f})', color='red', edgecolor='black')
+            
+            ax.set_xlabel('Number of Prefill Tokens', fontsize=12)
+            ax.set_ylabel('Frequency', fontsize=12)
+            ax.set_title('Prefill Token Distribution: Local vs Outsourced', fontsize=14, fontweight='bold')
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f"{base_plot_path}/prefill_tokens_histogram.png", dpi=300, bbox_inches='tight')
+            plt.close()
+        
+        # Decode tokens only
+        if local_decode or outsourced_decode:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            bins = np.linspace(
+                min((min(local_decode) if local_decode else float('inf')),
+                    (min(outsourced_decode) if outsourced_decode else float('inf'))),
+                max((max(local_decode) if local_decode else 0),
+                    (max(outsourced_decode) if outsourced_decode else 0)),
+                50
+            )
+            
+            if local_decode:
+                ax.hist(local_decode, bins=bins, alpha=0.6, label=f'Local (n={len(local_decode)}, mean={np.mean(local_decode):.0f})', color='blue', edgecolor='black')
+            if outsourced_decode:
+                ax.hist(outsourced_decode, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_decode)}, mean={np.mean(outsourced_decode):.0f})', color='red', edgecolor='black')
+            
+            ax.set_xlabel('Number of Decode Tokens', fontsize=12)
+            ax.set_ylabel('Frequency', fontsize=12)
+            ax.set_title('Decode Token Distribution: Local vs Outsourced', fontsize=14, fontweight='bold')
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f"{base_plot_path}/decode_tokens_histogram.png", dpi=300, bbox_inches='tight')
+            plt.close()
 
     def _store_running_request_events(self, base_plot_path: str):
         """Store running request execution events."""
