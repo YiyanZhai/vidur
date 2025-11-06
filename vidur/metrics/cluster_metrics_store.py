@@ -47,10 +47,12 @@ class ClusterMetricsStore:
         self,
         simulation_config: SimulationConfig,
         replicas: Dict[ReplicaId, Replica],
+        global_scheduler=None,
     ):
         self._simulation_config = simulation_config
         self._config = self._simulation_config.metrics_config
         self._replicas = replicas
+        self._global_scheduler = global_scheduler
 
         """
         TODO: We need to use a minimal `ClusterMetricsStore`.
@@ -174,19 +176,26 @@ class ClusterMetricsStore:
 
     def _store_outsourcing_metrics(self, base_plot_path: str):
         """Store outsourcing statistics and details."""
+        # Check if we have access to the global scheduler
+        if not self._global_scheduler:
+            return
+            
         # Collect outsourcing statistics from all replicas
         outsourcing_stats = {}
         all_outsourced_details = []
         
-        for replica_id, replica in self._replicas.items():
+        for replica_id in self._replicas.keys():
+            # Get the replica scheduler from global scheduler
+            replica_scheduler = self._global_scheduler.get_replica_scheduler(replica_id)
+            
             # Check if replica scheduler has outsourcing methods
-            if hasattr(replica._scheduler, 'get_outsourcing_statistics'):
-                stats = replica._scheduler.get_outsourcing_statistics()
+            if hasattr(replica_scheduler, 'get_outsourcing_statistics'):
+                stats = replica_scheduler.get_outsourcing_statistics()
                 outsourcing_stats[str(replica_id)] = stats
                 
                 # Collect detailed outsourced request information
-                if hasattr(replica._scheduler, 'get_outsourced_request_details'):
-                    details = replica._scheduler.get_outsourced_request_details()
+                if hasattr(replica_scheduler, 'get_outsourced_request_details'):
+                    details = replica_scheduler.get_outsourced_request_details()
                     all_outsourced_details.extend(details)
         
         # Save outsourcing statistics as JSON

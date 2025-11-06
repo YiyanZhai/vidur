@@ -64,7 +64,7 @@ python -m vidur.main \
 --replica_config_model_name meta-llama/Meta-Llama-3-8B \
 --replica_config_device h100 \
 --replica_config_network_device h100_dgx \
---cluster_config_num_replicas 8 \
+--cluster_config_num_replicas 1 \
 --replica_config_tensor_parallel_size 1 \
 --replica_config_num_pipeline_stages 1 \
 --request_generator_config_type synthetic \

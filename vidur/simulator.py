@@ -38,18 +38,19 @@ class Simulator:
             cluster_config=self._config.cluster_config,
             metrics_config=self._config.metrics_config,
         )
-        self._cluster_metric_store = ClusterMetricsStore(
-            simulation_config=self._config,
-            replicas=self._cluster.replicas,
-        )
-        self._request_generator = RequestGeneratorRegistry.get(
-            self._config.request_generator_config.get_type(),
-            self._config.request_generator_config,
-        )
         self._scheduler = GlobalSchedulerRegistry.get(
             self._config.cluster_config.global_scheduler_config.get_type(),
             self._config,
             self._cluster.replicas,
+        )
+        self._cluster_metric_store = ClusterMetricsStore(
+            simulation_config=self._config,
+            replicas=self._cluster.replicas,
+            global_scheduler=self._scheduler,
+        )
+        self._request_generator = RequestGeneratorRegistry.get(
+            self._config.request_generator_config.get_type(),
+            self._config.request_generator_config,
         )
 
         self._init_event_queue()

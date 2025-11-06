@@ -76,7 +76,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
 
         keep_ids, outsource_ids = self._knapsack_select(items, budget)
         if outsource_ids:
-            print(f"Outsourcing {(outsource_ids)} requests")
+            # print(f"Outsourcing {(outsource_ids)} requests")
             self._apply_outsourcing(outsource_ids)
 
     # ---- Helpers ----
@@ -495,7 +495,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             'num_decode_tokens': output_tokens,
             'num_processed_tokens': request.num_processed_tokens,
             'api_cost_usd': api_cost,
-            'replica_id': self._replica_id,
+            'replica_id': str(self._replica_id),
         })
     
     def _calculate_api_cost(self, input_tokens: int, output_tokens: int) -> float:
@@ -530,6 +530,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                 'total_api_cost_usd': 0.0,
                 'total_input_tokens': 0,
                 'total_output_tokens': 0,
+                'replica_id': str(self._replica_id),
             }
         
         total = len(self._outsourced_request_details)
@@ -546,7 +547,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             'total_api_cost_usd': total_cost,
             'total_input_tokens': total_input,
             'total_output_tokens': total_output,
-            'replica_id': self._replica_id,
+            'replica_id': str(self._replica_id),
         }
         
     @property
@@ -707,7 +708,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         # len(self.running).
         assert len(scheduled_reqs) <= len(self._running)
 
-        print(f"Replica {self._replica_id} scheduling: running {[r.id for r in self._running]}, waiting {[r.id for r in self._waiting_queue.to_list()] if self._waiting_queue else []}, scheduled {[(request.id, num_scheduled_tokens[request.id]) for request in scheduled_reqs]}, outsourced {len(self._outsourced_req_ids)}, mem {self.memory_usage_percent:.1f}%")
+        # print(f"Replica {self._replica_id} scheduling: running {[r.id for r in self._running]}, waiting {[r.id for r in self._waiting_queue.to_list()] if self._waiting_queue else []}, scheduled {[(request.id, num_scheduled_tokens[request.id]) for request in scheduled_reqs]}, outsourced {len(self._outsourced_req_ids)}, mem {self.memory_usage_percent:.1f}%")
 
         scheduler_output = ReplicaSchedulerOutput(
             (
