@@ -206,14 +206,53 @@ class ClusterMetricsStore:
                 file_name="outsourcing_statistics",
             )
             
+            # Calculate hypothetical cost if all requests were outsourced
+            # Get all request metrics to calculate total tokens
+            total_prefill_tokens = 0
+            total_decode_tokens = 0
+            total_requests = 0
+            
+            for replica_id, store in self._replica_metric_stores.items():
+                # Get request metrics dataframe
+                request_df = store.get_request_metrics_df()
+                if not request_df.empty:
+                    # Sum up tokens from all requests
+                    if 'Request Prefill Tokens' in request_df.columns:
+                        total_prefill_tokens += request_df['Request Prefill Tokens'].sum()
+                    if 'Request Decode Tokens' in request_df.columns:
+                        total_decode_tokens += request_df['Request Decode Tokens'].sum()
+                    total_requests += len(request_df)
+            
+            # Calculate hypothetical API cost using same pricing model
+            # Input: $0.50 per 1M tokens, Output: $1.50 per 1M tokens
+            input_price_per_million = 0.50
+            output_price_per_million = 1.50
+            
+            hypothetical_total_cost = (
+                (total_prefill_tokens / 1_000_000) * input_price_per_million +
+                (total_decode_tokens / 1_000_000) * output_price_per_million
+            )
+            
             # Calculate and save cluster-wide statistics
+            actual_cost = sum(s['total_api_cost_usd'] for s in outsourcing_stats.values())
+            
             cluster_stats = {
                 'total_outsourced': sum(s['total_outsourced'] for s in outsourcing_stats.values()),
-                'total_api_cost_usd': sum(s['total_api_cost_usd'] for s in outsourcing_stats.values()),
+                'total_api_cost_usd': actual_cost,
                 'total_input_tokens': sum(s['total_input_tokens'] for s in outsourcing_stats.values()),
                 'total_output_tokens': sum(s['total_output_tokens'] for s in outsourcing_stats.values()),
                 'outsourced_from_waiting': sum(s['outsourced_from_waiting'] for s in outsourcing_stats.values()),
                 'outsourced_from_running': sum(s['outsourced_from_running'] for s in outsourcing_stats.values()),
+                # Hypothetical cost calculations
+                'hypothetical_all_outsourced': {
+                    'total_requests': total_requests,
+                    'total_input_tokens': int(total_prefill_tokens),
+                    'total_output_tokens': int(total_decode_tokens),
+                    'total_api_cost_usd': hypothetical_total_cost,
+                },
+                # Cost savings
+                'cost_savings_usd': hypothetical_total_cost - actual_cost,
+                'cost_savings_percent': ((hypothetical_total_cost - actual_cost) / hypothetical_total_cost * 100) if hypothetical_total_cost > 0 else 0,
             }
             
             self._save_as_json(

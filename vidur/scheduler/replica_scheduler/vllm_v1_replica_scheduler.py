@@ -508,8 +508,8 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         Adjust these values based on your actual API pricing.
         """
         # Pricing per million tokens (in USD)
-        input_price_per_million = 0.50
-        output_price_per_million = 1.50
+        input_price_per_million = 1.25
+        output_price_per_million = 10.00
         
         input_cost = (input_tokens / 1_000_000) * input_price_per_million
         output_cost = (output_tokens / 1_000_000) * output_price_per_million
