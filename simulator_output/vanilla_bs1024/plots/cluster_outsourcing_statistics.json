@@ -1,0 +1,1 @@
+{"total_outsourced": 0, "total_api_cost_usd": 0.0, "total_input_tokens": 0, "total_output_tokens": 0, "outsourced_from_waiting": 0, "outsourced_from_running": 0, "hypothetical_all_outsourced": {"total_requests": 222, "total_input_tokens": 2487150, "total_output_tokens": 80375, "total_api_cost_usd": 3.9126875}, "cost_savings_usd": 3.9126875, "cost_savings_percent": 100.0}

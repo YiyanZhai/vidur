@@ -101,6 +101,9 @@ class Simulator:
 
         self._cluster_metric_store.plot(self._time)
         logger.info("Metrics written")
+        
+        # Save TTFT estimates from all replicas
+        self._save_ttft_estimates()
 
         if self._config.metrics_config.write_json_trace:
             self._write_event_trace()
@@ -155,3 +158,18 @@ class Simulator:
                     json.dumps(chrome_trace, cls=JsonEncoder),
                 )
             wandb.save(zip_file_path, policy="now")
+    
+    def _save_ttft_estimates(self) -> None:
+        """Save TTFT estimates from all replica schedulers."""
+        try:
+            output_dir = self._config.metrics_config.output_dir
+            # Access replica schedulers through the global scheduler
+            if hasattr(self._scheduler, '_replica_schedulers'):
+                for replica_id, replica_scheduler in self._scheduler._replica_schedulers.items():
+                    # Check if the scheduler has save_ttft_estimates method
+                    if hasattr(replica_scheduler, 'save_ttft_estimates'):
+                        replica_scheduler.save_ttft_estimates(output_dir)
+            logger.info("TTFT estimates saved")
+        except Exception as e:
+            logger.warning(f"Failed to save TTFT estimates: {e}")
+

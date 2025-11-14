@@ -301,7 +301,6 @@ class ClusterMetricsStore:
         
         for replica_id, store in self._replica_metric_stores.items():
             request_df = store.get_request_metrics_df()
-            print("request_df in plotting:", request_df)
             if not request_df.empty:
                 if 'request_num_prefill_tokens' in request_df.columns:
                     local_prefill_tokens.extend(request_df['request_num_prefill_tokens'].tolist())
@@ -329,10 +328,15 @@ class ClusterMetricsStore:
                 50
             )
             
-            if local_prefill_tokens:
-                ax1.hist(local_prefill_tokens, bins=bins, alpha=0.6, label=f'Local (n={len(local_prefill_tokens)})', color='blue', edgecolor='black')
-            if outsourced_prefill_tokens:
-                ax1.hist(outsourced_prefill_tokens, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_prefill_tokens)})', color='red', edgecolor='black')
+            # Stack the histograms instead of overlapping
+            if local_prefill_tokens and outsourced_prefill_tokens:
+                ax1.hist([local_prefill_tokens, outsourced_prefill_tokens], bins=bins, 
+                        label=[f'Local (n={len(local_prefill_tokens)})', f'Outsourced (n={len(outsourced_prefill_tokens)})'], 
+                        color=['blue', 'red'], edgecolor='black', stacked=True)
+            elif local_prefill_tokens:
+                ax1.hist(local_prefill_tokens, bins=bins, label=f'Local (n={len(local_prefill_tokens)})', color='blue', edgecolor='black')
+            elif outsourced_prefill_tokens:
+                ax1.hist(outsourced_prefill_tokens, bins=bins, label=f'Outsourced (n={len(outsourced_prefill_tokens)})', color='red', edgecolor='black')
             
             ax1.set_xlabel('Number of Prefill Tokens', fontsize=12)
             ax1.set_ylabel('Frequency', fontsize=12)
@@ -350,10 +354,15 @@ class ClusterMetricsStore:
                 50
             )
             
-            if local_decode_tokens:
-                ax2.hist(local_decode_tokens, bins=bins, alpha=0.6, label=f'Local (n={len(local_decode_tokens)})', color='blue', edgecolor='black')
-            if outsourced_decode_tokens:
-                ax2.hist(outsourced_decode_tokens, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_decode_tokens)})', color='red', edgecolor='black')
+            # Stack the histograms instead of overlapping
+            if local_decode_tokens and outsourced_decode_tokens:
+                ax2.hist([local_decode_tokens, outsourced_decode_tokens], bins=bins, 
+                        label=[f'Local (n={len(local_decode_tokens)})', f'Outsourced (n={len(outsourced_decode_tokens)})'], 
+                        color=['blue', 'red'], edgecolor='black', stacked=True)
+            elif local_decode_tokens:
+                ax2.hist(local_decode_tokens, bins=bins, label=f'Local (n={len(local_decode_tokens)})', color='blue', edgecolor='black')
+            elif outsourced_decode_tokens:
+                ax2.hist(outsourced_decode_tokens, bins=bins, label=f'Outsourced (n={len(outsourced_decode_tokens)})', color='red', edgecolor='black')
             
             ax2.set_xlabel('Number of Decode Tokens', fontsize=12)
             ax2.set_ylabel('Frequency', fontsize=12)
@@ -368,91 +377,91 @@ class ClusterMetricsStore:
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        # Also create individual plots for better detail
-        self._plot_individual_token_histograms(base_plot_path, local_prefill_tokens, local_decode_tokens,
-                                               outsourced_prefill_tokens, outsourced_decode_tokens)
+        # # Also create individual plots for better detail
+        # self._plot_individual_token_histograms(base_plot_path, local_prefill_tokens, local_decode_tokens,
+        #                                        outsourced_prefill_tokens, outsourced_decode_tokens)
     
-    def _plot_individual_token_histograms(self, base_plot_path: str, 
-                                         local_prefill: List, local_decode: List,
-                                         outsourced_prefill: List, outsourced_decode: List):
-        """Create individual histogram plots for each token type."""
-        try:
-            import matplotlib.pyplot as plt
-            import numpy as np
-        except ImportError:
-            return
+    # def _plot_individual_token_histograms(self, base_plot_path: str, 
+    #                                      local_prefill: List, local_decode: List,
+    #                                      outsourced_prefill: List, outsourced_decode: List):
+    #     """Create individual histogram plots for each token type."""
+    #     try:
+    #         import matplotlib.pyplot as plt
+    #         import numpy as np
+    #     except ImportError:
+    #         return
         
-        # Prefill tokens only
-        if local_prefill or outsourced_prefill:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            bins = np.linspace(
-                min((min(local_prefill) if local_prefill else float('inf')),
-                    (min(outsourced_prefill) if outsourced_prefill else float('inf'))),
-                max((max(local_prefill) if local_prefill else 0),
-                    (max(outsourced_prefill) if outsourced_prefill else 0)),
-                50
-            )
+    #     # Prefill tokens only
+    #     if local_prefill or outsourced_prefill:
+    #         fig, ax = plt.subplots(figsize=(10, 6))
+    #         bins = np.linspace(
+    #             min((min(local_prefill) if local_prefill else float('inf')),
+    #                 (min(outsourced_prefill) if outsourced_prefill else float('inf'))),
+    #             max((max(local_prefill) if local_prefill else 0),
+    #                 (max(outsourced_prefill) if outsourced_prefill else 0)),
+    #             50
+    #         )
             
-            if local_prefill:
-                ax.hist(local_prefill, bins=bins, alpha=0.6, label=f'Local (n={len(local_prefill)}, mean={np.mean(local_prefill):.0f})', color='blue', edgecolor='black')
-            if outsourced_prefill:
-                ax.hist(outsourced_prefill, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_prefill)}, mean={np.mean(outsourced_prefill):.0f})', color='red', edgecolor='black')
+    #         if local_prefill:
+    #             ax.hist(local_prefill, bins=bins, alpha=0.6, label=f'Local (n={len(local_prefill)}, mean={np.mean(local_prefill):.0f})', color='blue', edgecolor='black')
+    #         if outsourced_prefill:
+    #             ax.hist(outsourced_prefill, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_prefill)}, mean={np.mean(outsourced_prefill):.0f})', color='red', edgecolor='black')
             
-            ax.set_xlabel('Number of Prefill Tokens', fontsize=12)
-            ax.set_ylabel('Frequency', fontsize=12)
-            ax.set_title('Prefill Token Distribution: Local vs Outsourced', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
+    #         ax.set_xlabel('Number of Prefill Tokens', fontsize=12)
+    #         ax.set_ylabel('Frequency', fontsize=12)
+    #         ax.set_title('Prefill Token Distribution: Local vs Outsourced', fontsize=14, fontweight='bold')
+    #         ax.legend(fontsize=11)
+    #         ax.grid(True, alpha=0.3)
             
-            plt.tight_layout()
-            plt.savefig(f"{base_plot_path}/prefill_tokens_histogram.png", dpi=300, bbox_inches='tight')
-            plt.close()
+    #         plt.tight_layout()
+    #         plt.savefig(f"{base_plot_path}/prefill_tokens_histogram.png", dpi=300, bbox_inches='tight')
+    #         plt.close()
         
-        # Decode tokens only
-        if local_decode or outsourced_decode:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            bins = np.linspace(
-                min((min(local_decode) if local_decode else float('inf')),
-                    (min(outsourced_decode) if outsourced_decode else float('inf'))),
-                max((max(local_decode) if local_decode else 0),
-                    (max(outsourced_decode) if outsourced_decode else 0)),
-                50
-            )
+    #     # Decode tokens only
+    #     if local_decode or outsourced_decode:
+    #         fig, ax = plt.subplots(figsize=(10, 6))
+    #         bins = np.linspace(
+    #             min((min(local_decode) if local_decode else float('inf')),
+    #                 (min(outsourced_decode) if outsourced_decode else float('inf'))),
+    #             max((max(local_decode) if local_decode else 0),
+    #                 (max(outsourced_decode) if outsourced_decode else 0)),
+    #             50
+    #         )
             
-            if local_decode:
-                ax.hist(local_decode, bins=bins, alpha=0.6, label=f'Local (n={len(local_decode)}, mean={np.mean(local_decode):.0f})', color='blue', edgecolor='black')
-            if outsourced_decode:
-                ax.hist(outsourced_decode, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_decode)}, mean={np.mean(outsourced_decode):.0f})', color='red', edgecolor='black')
+    #         if local_decode:
+    #             ax.hist(local_decode, bins=bins, alpha=0.6, label=f'Local (n={len(local_decode)}, mean={np.mean(local_decode):.0f})', color='blue', edgecolor='black')
+    #         if outsourced_decode:
+    #             ax.hist(outsourced_decode, bins=bins, alpha=0.6, label=f'Outsourced (n={len(outsourced_decode)}, mean={np.mean(outsourced_decode):.0f})', color='red', edgecolor='black')
             
-            ax.set_xlabel('Number of Decode Tokens', fontsize=12)
-            ax.set_ylabel('Frequency', fontsize=12)
-            ax.set_title('Decode Token Distribution: Local vs Outsourced', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
+    #         ax.set_xlabel('Number of Decode Tokens', fontsize=12)
+    #         ax.set_ylabel('Frequency', fontsize=12)
+    #         ax.set_title('Decode Token Distribution: Local vs Outsourced', fontsize=14, fontweight='bold')
+    #         ax.legend(fontsize=11)
+    #         ax.grid(True, alpha=0.3)
             
-            plt.tight_layout()
-            plt.savefig(f"{base_plot_path}/decode_tokens_histogram.png", dpi=300, bbox_inches='tight')
-            plt.close()
+    #         plt.tight_layout()
+    #         plt.savefig(f"{base_plot_path}/decode_tokens_histogram.png", dpi=300, bbox_inches='tight')
+    #         plt.close()
 
-    def _store_running_request_events(self, base_plot_path: str):
-        """Store running request execution events."""
-        all_running_events = []
+    # def _store_running_request_events(self, base_plot_path: str):
+    #     """Store running request execution events."""
+    #     all_running_events = []
         
-        for replica_id, store in self._replica_metric_stores.items():
-            if hasattr(store, 'get_running_request_events'):
-                events = store.get_running_request_events()
-                all_running_events.extend(events)
+    #     for replica_id, store in self._replica_metric_stores.items():
+    #         if hasattr(store, 'get_running_request_events'):
+    #             events = store.get_running_request_events()
+    #             all_running_events.extend(events)
         
-        # Save running request events as CSV
-        if all_running_events:
-            running_df = pd.DataFrame(all_running_events)
-            # Sort by event time for better readability
-            running_df.sort_values(by='event_time', inplace=True)
-            self._save_as_csv(
-                df=running_df,
-                base_path=self._config.output_dir,
-                file_name="running_requests",
-            )
+    #     # Save running request events as CSV
+    #     if all_running_events:
+    #         running_df = pd.DataFrame(all_running_events)
+    #         # Sort by event time for better readability
+    #         running_df.sort_values(by='event_time', inplace=True)
+    #         self._save_as_csv(
+    #             df=running_df,
+    #             base_path=self._config.output_dir,
+    #             file_name="running_requests",
+    #         )
 
     def _store_batch_metrics(self, base_plot_path: str):
         if not self._config.store_batch_metrics:
@@ -635,7 +644,7 @@ class ClusterMetricsStore:
         self._store_operation_metrics(dir_plot_path)
         self._store_utilization_metrics(dir_plot_path)
         self._store_outsourcing_metrics(dir_plot_path)
-        self._store_running_request_events(dir_plot_path)
+        # self._store_running_request_events(dir_plot_path)
 
     def on_batch_end(
         self, time: float, batch, replica_id: ReplicaId, memory_usage_percent: float

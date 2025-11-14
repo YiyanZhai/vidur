@@ -1,5 +1,3 @@
-import math
-
 from collections import deque
 from typing import Deque, Dict, List
 
@@ -8,6 +6,14 @@ from vidur.kv_cache.replica_kv_cache_manager import ReplicaKVCacheManager
 from vidur.logger import init_logger
 from vidur.scheduler.replica_scheduler.base_replica_scheduler import (
     BaseReplicaScheduler,
+)
+from vidur.scheduler.replica_scheduler.outsourcing import (
+    APICostCalculator,
+    CandidateSelector,
+    KnapsackSolver,
+    RequestTracker,
+    TTFTEstimateTracker,
+    TTFTViolationDetector,
 )
 from vidur.scheduler.replica_scheduler.replica_scheduler_output import (
     ReplicaSchedulerOutput,
@@ -51,7 +57,6 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         
         # Outsourcing state
         self._outsourced_req_ids: set[str] = set()
-        self._outsourced_request_details: List[dict] = []
         
         # Initialize outsourcing configuration
         self._init_outsourcing_config()
@@ -61,9 +66,16 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
     def _init_outsourcing_config(self):
         """Initialize outsourcing-related configuration parameters."""
         # Throughput estimates (tokens/sec)
-        self._prefill_throughput = getattr(
-            self._config, 'prefill_tokens_per_sec', 1000
+        # Use dynamic estimation if available, otherwise fall back to config/default
+        use_dynamic_throughput = getattr(
+            self._config, 'use_dynamic_prefill_throughput', True
         )
+        if use_dynamic_throughput:
+            self._prefill_throughput = None  # Will be computed dynamically
+        else:
+            self._prefill_throughput = getattr(
+                self._config, 'prefill_tokens_per_sec', 1000
+            )
         
         # Weight ratio for decode vs prefill in knapsack
         self._decode_weight_ratio = getattr(
@@ -75,199 +87,216 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             self._config, 'budget_horizon_iterations', 2
         )
         
-        # # Candidate queue multiplier
-        # self._max_candidate_multiplier = getattr(
-        #     self._config, 'candidate_queue_multiplier', 4
-        # )
-        
-        # Knapsack selection strategy
-        strategy = getattr(self._config, 'knapsack_strategy', 'dp_scaled')
-        self._knapsack_select = self._get_knapsack_strategy(strategy)
-        
-        # TTFT violation detection mode
-        violation_mode = getattr(self._config, 'ttft_violation_mode', 'all')
-        self._exist_ttft_violation_ = self._get_violation_detector(violation_mode)
-        
         # Debug logging flag
         self._debug_outsourcing = getattr(
             self._config, 'debug_outsourcing', False
         )
+        
+        # Initialize outsourcing components
+        self._cost_calculator = APICostCalculator(
+            input_price_per_million=getattr(self._config, 'input_price_per_million', 1.25),
+            output_price_per_million=getattr(self._config, 'output_price_per_million', 10.00),
+        )
+        
+        self._request_tracker = RequestTracker(
+            replica_id=self._replica_id,
+            cost_calculator=self._cost_calculator.calculate_cost,
+        )
+        
+        self._candidate_selector = CandidateSelector()
+        
+        strategy = getattr(self._config, 'knapsack_strategy', 'dp_scaled')
+        self._knapsack_solver = KnapsackSolver(strategy=strategy)
+        
+        # Initialize TTFT estimate tracker
+        self._ttft_tracker = TTFTEstimateTracker()
+        
+        violation_mode = getattr(self._config, 'ttft_violation_mode', 'all')
+        self._violation_detector = TTFTViolationDetector(
+            mode=violation_mode,
+            prefill_throughput=self._get_prefill_throughput_estimate(),
+            max_micro_batch_size=self._max_micro_batch_size,
+            ttft_tracker=self._ttft_tracker,  # Pass tracker to violation detector
+        )
     
-    def _get_knapsack_strategy(self, strategy: str):
-        """Get the knapsack selection function based on strategy name."""
-        strategies = {
-            'fractional': self._knapsack_select_fractional,
-            'dp': self._knapsack_select_dp,
-            'dp_scaled': self._knapsack_select_dp_scaled,
-            'random': self._sanity_check_randomly_select,
-        }
-        if strategy not in strategies:
-            raise ValueError(f"Unknown knapsack strategy: {strategy}. "
-                           f"Choose from: {list(strategies.keys())}")
-        return strategies[strategy]
-    
-    def _get_violation_detector(self, mode: str):
-        """Get the TTFT violation detection function based on mode."""
-        detectors = {
-            'all': self._ttft_violations_any,
-            'head': self._ttft_violation_imminent,
-        }
-        if mode not in detectors:
-            raise ValueError(f"Unknown TTFT violation mode: {mode}. "
-                           f"Choose from: {list(detectors.keys())}")
-        return detectors[mode]
+    def _get_prefill_throughput_estimate(self, chunk_size: int = None) -> float:
+        """
+        Estimate prefill throughput (tokens/sec) using the execution time predictor.
+        
+        This method creates a synthetic batch to query the execution time predictor
+        and calculates an approximate throughput based on predicted execution time.
+        
+        Args:
+            chunk_size: Size of prefill chunk to use for estimation. 
+                       Defaults to configured chunk_size.
+        
+        Returns:
+            Estimated prefill throughput in tokens per second.
+        """
+        # If static throughput is configured, use it
+        if self._prefill_throughput is not None:
+            return self._prefill_throughput
+        
+        # Use chunk_size for estimation
+        if chunk_size is None:
+            chunk_size = self._config.chunk_size
+        
+        # Create a synthetic request for throughput estimation
+        # We'll use a simple case: single request, no KV cache
+        from vidur.entities import Request as RequestEntity
+        
+        # Create a dummy request (we only need it for the batch structure)
+        dummy_request = RequestEntity(
+            arrived_at=0.0,
+            num_prefill_tokens=chunk_size,
+            num_decode_tokens=1,
+            block_hash_ids=None,
+            block_size=15
+        )
+        
+        # Create a synthetic batch with the chunk size
+        synthetic_batch = Batch(
+            replica_id=self._replica_id,
+            requests=[dummy_request],
+            num_tokens=[chunk_size],
+        )
+        
+        # Get execution time prediction from the predictor
+        # Pipeline stage 0 since we don't support pipeline parallelism
+        exec_time = self._execution_time_predictor.get_batch_execution_time(
+            synthetic_batch, pipeline_stage=0
+        )
+        
+        # Calculate total time for prefill in milliseconds
+        # Use model_time_ms if available (more accurate), otherwise sum components
+        if hasattr(exec_time, 'model_time_ms') and exec_time.model_time_ms is not None:
+            total_time_ms = float(exec_time.model_time_ms)
+        else:
+            # Sum up the relevant prefill execution time components
+            per_layer_ms = (
+                exec_time.attention_prefill_execution_time +
+                exec_time.attention_layer_pre_proj_execution_time +
+                exec_time.attention_layer_post_proj_execution_time +
+                exec_time.attention_rope_execution_time +
+                exec_time.attention_kv_cache_save_execution_time +
+                exec_time.mlp_up_proj_time +
+                exec_time.mlp_down_proj_time +
+                exec_time.mlp_act_time +
+                exec_time.attn_norm_time +
+                exec_time.mlp_norm_time +
+                exec_time.add_time
+            )
+            
+            total_time_ms = per_layer_ms * self._replica_config.model_config.num_layers
+            
+            # Add communication overhead if present
+            if exec_time.attention_all_reduce_time > 0:
+                total_time_ms += exec_time.attention_all_reduce_time
+            if exec_time.pipeline_parallel_communication_time > 0:
+                total_time_ms += exec_time.pipeline_parallel_communication_time
+        
+        # Convert to seconds
+        total_time_sec = total_time_ms / 1000.0
+        
+        # Calculate throughput: tokens / time
+        if total_time_sec > 0:
+            throughput = chunk_size / total_time_sec
+        else:
+            # Fallback to default if prediction fails
+            logger.warning(f"[Replica {self._replica_id}] Predicted execution time is zero, "
+                         f"using fallback throughput of 1000 tokens/sec")
+            throughput = 1000.0
+        
+        if self._debug_outsourcing:
+            logger.info(f"[Replica {self._replica_id}] Estimated prefill throughput: "
+                       f"{throughput:.1f} tokens/sec (chunk_size={chunk_size}, "
+                       f"exec_time={total_time_ms:.2f}ms)")
+        
+        return throughput
         
     # ==================== Outsourcing Orchestration ====================
     
     def _maybe_outsource_before_schedule(self, current_time: float) -> None:
-        """Main outsourcing decision hook called before each scheduling step."""
+        """
+        Main outsourcing decision hook called before each scheduling step.
+        Iteratively outsources one request at a time until TTFT violations are resolved.
+        """
         if not len(self._waiting_queue) and not self._running:
             return
 
-        if not self._exist_ttft_violation_(current_time):
-            return
+        # Iteratively outsource one request at a time until no violations
+        iteration = 0
+        max_iterations = 100  # Safety limit to prevent infinite loops
         
-        if self._debug_outsourcing:
-            logger.debug(f"[Replica {self._replica_id}] TTFT violation detected at t={current_time:.2f}")
-        
-        candidates = self._collect_outsourcing_candidates()
-        if not candidates:
-            if self._debug_outsourcing:
-                logger.debug(f"[Replica {self._replica_id}] No outsourcing candidates found")
-            return
-
-        items = [self._knapsack_item_for(r) for r in candidates]
-        budget = self._local_prefill_budget_horizon()
-
-        keep_ids, outsource_ids = self._knapsack_select(items, budget)
-        if outsource_ids:
-            if self._debug_outsourcing:
-                logger.debug(f"[Replica {self._replica_id}] Outsourcing {len(outsource_ids)} requests: {outsource_ids}")
-            self._apply_outsourcing(outsource_ids, current_time)
-
-    # ==================== TTFT Violation Detection ====================
-    
-    def _ttft_violations_any(self, now: float) -> bool:
-        """
-        Check EVERY waiting request for imminent TTFT violation under FCFS.
-        Returns True if any request is at risk of SLO violation.
-        """
-        waiting = self._collect_outsourcing_candidates()
-        if not waiting:
-            return False
-
-        # Use configured prefill throughput TODO: make dynamic
-        Sp = self._prefill_throughput
-
-        # Precompute remaining prefill for each request (sunk work + prefix cache)
-        rem_prefill = []
-        for r in waiting:
-            cached = self.get_cached_prefill_length(r)
-            processed = r.num_processed_tokens
-            prefill_done = max(processed, cached)
-            rem = max(0, r.num_prefill_tokens - prefill_done)
-            rem_prefill.append(rem)
-
-        # Prefix sum: work ahead of each request in FCFS order
-        ahead = [0] * len(waiting)
-        acc = 0
-        for i in range(len(waiting)):
-            ahead[i] = acc
-            acc += rem_prefill[i]
+        while iteration < max_iterations:
+            # Check for TTFT violations
+            waiting_list = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else list(self._waiting_queue)
+            if not self._violation_detector.check_violations(
+                waiting_list, self.get_cached_prefill_length, current_time
+            ):
+                # No violations detected, we're done
+                if iteration > 0 and self._debug_outsourcing:
+                    logger.info(f"[Replica {self._replica_id}] TTFT violations resolved after {iteration} outsourcing iteration(s)")
+                return
             
-        # Evaluate every request with an SLO; collect those at risk
-        at_risk = set()
-        saw_any_slo = False
-        for i, r in enumerate(waiting):
-            if getattr(r, "prefill_slo_time", None) is None:
-                continue
-            saw_any_slo = True
+            if iteration == 0 and self._debug_outsourcing:
+                logger.info(f"[Replica {self._replica_id}] TTFT violation detected at t={current_time:.2f}")
+            
+            # Collect candidates
+            candidates = self._candidate_selector.collect_candidates(
+                waiting_requests=waiting_list,
+                running_requests=self._running,
+                outsourced_req_ids=self._outsourced_req_ids,
+                scheduled_req_ids=self.scheduled_req_ids,
+            )
+            
+            if not candidates:
+                if self._debug_outsourcing:
+                    logger.info(f"[Replica {self._replica_id}] No more outsourcing candidates, stopping at iteration {iteration}")
+                return
 
-            est_ttft = (ahead[i] + rem_prefill[i]) / Sp
-            time_left = r.prefill_deadline_at - now
-            if est_ttft > time_left:
-                at_risk.add(r.id)
-
-        # If none had an explicit SLO, fall back to a simple pressure heuristic
-        if not saw_any_slo:
-            if len(waiting) > self._max_micro_batch_size:
-                at_risk.update(r.id for r in waiting[:self._max_micro_batch_size])
-
-        return len(at_risk) > 0
-
-    def _ttft_violation_imminent(self, now: float) -> bool:
-        """
-        Check if the head request has imminent TTFT violation.
-        Returns True if head request is at risk of SLO violation.
-        """
-        head = self._waiting_queue.peek() if len(self._waiting_queue) else None
-        if head is None:
-            return False
-        if head.prefill_slo_time is None:
-            # Fallback to queue length heuristic
-            return len(self._waiting_queue) > self._max_micro_batch_size
+            # Build knapsack items
+            items = [self._knapsack_item_for(r) for r in candidates]
+            
+            # Calculate total weight needed to keep all candidates local
+            total_weight = sum(item["weight"] for item in items)
+            
+            # Set budget to total_weight - 1 to force outsourcing of at least one request
+            # This ensures we select all but one request to keep local
+            budget = max(1, total_weight - 1)
+            
+            # Solve knapsack - this will select requests to KEEP local
+            keep_ids, outsource_ids = self._knapsack_solver.solve(items, budget)
+            
+            # If knapsack couldn't outsource anything (shouldn't happen with budget = total - 1)
+            # fall back to outsourcing the lowest value request
+            if not outsource_ids:
+                # Sort by value (lowest first) and outsource the cheapest one
+                sorted_items = sorted(items, key=lambda x: x["value"])
+                outsource_ids = [sorted_items[0]["id"]]
+                if self._debug_outsourcing:
+                    logger.info(f"[Replica {self._replica_id}] Knapsack didn't outsource, manually selecting lowest-value request")
+            
+            # Outsource only ONE request (the first one selected)
+            # This is more conservative than outsourcing all at once
+            single_outsource = [outsource_ids[0]] if outsource_ids else []
+            
+            if single_outsource:
+                if self._debug_outsourcing:
+                    logger.info(f"[Replica {self._replica_id}] Iteration {iteration + 1}: Outsourcing 1 request: {single_outsource[0]}")
+                self._apply_outsourcing(single_outsource, current_time)
+                iteration += 1
+            else:
+                # No request to outsource, break
+                if self._debug_outsourcing:
+                    logger.info(f"[Replica {self._replica_id}] No request selected for outsourcing at iteration {iteration}")
+                return
         
-        est_ttft = self._estimate_fcfs_ttft(head)
-        return (head.prefill_deadline_at - now) < est_ttft
+        # Safety limit reached
+        if self._debug_outsourcing:
+            logger.warning(f"[Replica {self._replica_id}] Reached max outsourcing iterations ({max_iterations}), violations may still exist")
 
-    def _estimate_fcfs_ttft(self, req: Request) -> float:
-        """
-        Estimate Time-to-First-Token under FCFS assumption.
-        Returns: queueing delay + own prefill time (in seconds).
-        """
-        Sp = self._prefill_throughput
-        if Sp <= 0:
-            return float("inf")
-
-        # Sum remaining prefill work of all waiting requests ahead of this one
-        ahead_prefill = 0
-        for r in self._waiting_queue.to_list():
-            if r.id == req.id:
-                break
-            cached = self.get_cached_prefill_length(r)
-            processed = r.num_processed_tokens
-            prefill_done = max(processed, cached)
-            rem = max(0, r.num_prefill_tokens - prefill_done)
-            ahead_prefill += rem
-
-        # Own prefill work
-        cached = self.get_cached_prefill_length(req)
-        processed = req.num_processed_tokens
-        prefill_done = max(processed, cached)
-        rem_self = max(0, req.num_prefill_tokens - prefill_done)
-
-        # Convert to seconds
-        est = (ahead_prefill + rem_self) / Sp
-        return est
-    
-    # ==================== Candidate Collection ====================
-    
-    def _collect_outsourcing_candidates(self) -> list[Request]:
-        """
-        Collect requests eligible for outsourcing.
-        Includes: waiting requests (up to queue multiplier limit) + running prefill requests.
-        Excludes: already outsourced, currently scheduled, or in decode phase.
-        """
-        cands = []
-        
-        # Get waiting requests (cheap to outsource)
-        ls = self._waiting_queue.to_list() if hasattr(self._waiting_queue, "to_list") else list(self._waiting_queue)
-        # k = min(len(ls), self._max_candidate_multiplier * self._max_micro_batch_size)
-        k = len(ls)
-        for r in ls[:k]:
-            if r.id not in self._outsourced_req_ids:
-                cands.append(r)
-
-        # Add running prefill requests (avoid decode-phase ejection)
-        for r in self._running:
-            if (not r.is_prefill_complete and 
-                r.id not in self._outsourced_req_ids and
-                r.id not in self.scheduled_req_ids):
-                cands.append(r)
-        
-        return cands
-
-    # ==================== Knapsack Optimization ====================
+    # ==================== Knapsack Item Construction ====================
     
     def _knapsack_item_for(self, r: Request) -> dict:
         """
@@ -283,10 +312,32 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         rem_decode = max(0, r.num_decode_tokens - decode_done)
         
         # Weight = remaining work (normalized by decode ratio)
-        weight = rem_prefill + self._decode_weight_ratio * rem_decode
+        # Weight = remaining FLOPs needed
+        # Prefill FLOPs: 2 * n * d * (d_ff + d_model)
+        # Decode FLOPs: 2 * d * (d_ff + d_model) per token
+        # Simplified: prefill_flops ≈ 2 * n * d^2, decode_flops ≈ 2 * d^2
+        # Ratio: prefill_flops / decode_flops ≈ n (sequence length)
+        
+        # Get model dimensions from config
+        d_model = self._replica_config.model_config.embedding_dim
+        d_ff = self._replica_config.model_config.mlp_hidden_dim
+        num_layers = self._replica_config.model_config.num_layers
+        
+        # Calculate FLOPs per token (simplified formula)
+        # Forward pass FLOPs ≈ 2 * num_layers * (4 * d_model^2 + 2 * d_model * d_ff)
+        flops_per_token = 2 * num_layers * (4 * d_model * d_model + 2 * d_model * d_ff)
+        
+        # Prefill is more expensive per token due to attention computation
+        # Attention FLOPs scale with sequence length: O(n^2 * d)
+        # For simplicity, use average sequence position for prefill
+        avg_seq_len = (r.num_prefill_tokens + 1) / 2
+        prefill_flops = rem_prefill * flops_per_token * avg_seq_len
+        decode_flops = rem_decode * flops_per_token
+        
+        weight = int(prefill_flops + self._decode_weight_ratio * decode_flops)
         
         # Value = cost savings from NOT outsourcing (API cost avoided)
-        api_cost = self._calculate_api_cost(rem_prefill, rem_decode)
+        api_cost = self._cost_calculator.calculate_cost(rem_prefill, rem_decode)
         value = int(api_cost * 1000)  # Scale to avoid float issues in DP
         
         return {"id": r.id, "weight": max(1, weight), "value": max(1, value)}
@@ -294,205 +345,6 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
     def _local_prefill_budget_horizon(self) -> int:
         """Calculate the local budget for prefill work over the next horizon iterations."""
         return self._budget_horizon * self._max_micro_batch_size * self._config.chunk_size
-
-    def _knapsack_select_fractional(self, items, budget):
-        # Greedy by value/weight: keep highest “bang-per-token” locally
-        items = sorted(items, key=lambda x: x["value"]/x["weight"], reverse=True)
-        keep, total = [], 0
-        for it in items:
-            if total + it["weight"] <= budget:
-                keep.append(it["id"])
-                total += it["weight"]
-        keep_set = set(keep)
-        outsource = [it["id"] for it in items if it["id"] not in keep_set]
-        return keep_set, outsource
-    
-    def _knapsack_select_dp(self, items, budget):
-        """
-        0/1 knapsack (dynamic programming).
-        items: list[{"id": <hashable>, "weight": int>=1, "value": int>=0}]
-        budget: int >= 0
-        Returns: (keep_set, outsource_ids)
-        """
-        if budget <= 0 or not items:
-            return set(), [it["id"] for it in items]
-
-        n = len(items)
-        # dp[b] = max value achievable with capacity b using items[0..i] (rolling over i)
-        dp = [0] * (budget + 1)
-        # choice[i][b] = True if item i is taken when achieving dp at capacity b
-        choice = [[False] * (budget + 1) for _ in range(n)]
-
-        # Fill DP
-        for i, it in enumerate(items):
-            w = int(it["weight"])
-            v = int(it["value"])
-            if w <= 0:
-                # guard against bad inputs; treat as minimal weight
-                w = 1
-            if w > budget:
-                # can't ever fit; skip updates but keep False in choice
-                continue
-            # iterate backward to avoid reusing item i more than once
-            for b in range(budget, w, -1):
-                if dp[b - w] + v > dp[b]:
-                    dp[b] = dp[b - w] + v
-                    choice[i][b] = True
-            # handle b == w explicitly (range(...) excludes the endpoint)
-            if dp[w] < v:
-                dp[w] = v
-                choice[i][w] = True
-
-        # Reconstruct chosen set (take the best capacity)
-        b = max(range(budget + 1), key=lambda x: dp[x])
-        keep_ids = []
-        for i in range(n - 1, -1, -1):
-            if choice[i][b]:
-                keep_ids.append(items[i]["id"])
-                b -= int(items[i]["weight"]) if items[i]["weight"] > 0 else 1
-
-        keep_set = set(keep_ids)
-        outsource_ids = [it["id"] for it in items if it["id"] not in keep_set]
-        return keep_set, outsource_ids
-
-    def _knapsack_select_dp_scaled(self, items, budget, target_scaled_budget=5000, fallback_threshold=5_000_000):
-        """
-        Scaled 0/1 knapsack DP to handle very large weights/budgets.
-        items: list[{"id": <hashable>, "weight": number>=1, "value": number>=0}]
-        budget: number >= 0  (original units)
-        target_scaled_budget: aim to shrink budget to about this size
-        fallback_threshold: if n * scaled_budget exceeds this, fallback to greedy
-
-        Returns: (keep_set, outsource_ids)
-        """
-        n = len(items)
-        if budget <= 0 or n == 0:
-            return set(), [it["id"] for it in items]
-
-        # --- 1) Choose scale factor so scaled_budget ~ target_scaled_budget
-        # scale >= 1; larger scale -> smaller scaled_budget
-        scale = max(1, math.ceil(budget / max(1, target_scaled_budget)))
-        scaled_budget = max(1, budget // scale)
-
-        # Helper: ceil_div for weights so we don't under-estimate capacity usage
-        def ceil_div(a, b):  # b > 0
-            return (a + b - 1) // b
-
-        # --- 2) Build scaled items
-        scaled_items = []
-        for it in items:
-            # Use ceil for weights to avoid underestimating capacity usage
-            w = max(1, math.ceil(float(it["weight"])))
-            v = max(0, int(float(it["value"])))
-            sw = max(1, ceil_div(w, scale))  # ceil divide to avoid underpacking
-            scaled_items.append({"id": it["id"], "weight": sw, "value": v, "orig_weight": w})
-
-        # --- 3) If DP would be too large, fallback to greedy by value/weight
-        if n * scaled_budget > fallback_threshold:
-            # Greedy approximation as a safety valve
-            ranked = sorted(scaled_items, key=lambda x: x["value"] / max(1, x["weight"]), reverse=True)
-            keep, total_sw = [], 0
-            for it in ranked:
-                if total_sw + it["weight"] <= scaled_budget:
-                    keep.append(it)
-                    total_sw += it["weight"]
-            keep_ids = set(it["id"] for it in keep)
-            # Repair for original budget (rarely needed)
-            keep_ids = self._repair_for_original_budget(keep_ids, items, budget)
-            outsource_ids = [it["id"] for it in items if it["id"] not in keep_ids]
-            return keep_ids, outsource_ids
-
-        # --- 4) Standard 0/1 knapsack DP on scaled instance
-        dp = [0] * (scaled_budget + 1)
-        choice = [[False] * (scaled_budget + 1) for _ in range(n)]
-
-        for i, it in enumerate(scaled_items):
-            w = it["weight"]
-            v = it["value"]
-            if w > scaled_budget:
-                continue
-            # Backwards iteration for 0/1 knapsack
-            for b in range(scaled_budget, w, -1):
-                if dp[b - w] + v > dp[b]:
-                    dp[b] = dp[b - w] + v
-                    choice[i][b] = True
-            # handle exactly b == w (range excludes endpoint)
-            if dp[w] < v:
-                dp[w] = v
-                choice[i][w] = True
-
-        # Reconstruct selection at best capacity
-        b = max(range(scaled_budget + 1), key=lambda x: dp[x])
-        keep_idx = []
-        for i in range(n - 1, -1, -1):
-            if b < 0:
-                break
-            if b <= scaled_budget and choice[i][b]:
-                keep_idx.append(i)
-                b -= scaled_items[i]["weight"]
-                if b <= 0:
-                    break
-
-        keep_ids = set(scaled_items[i]["id"] for i in keep_idx)
-
-        # --- 5) Repair step in ORIGINAL units (ensure feasibility w.r.t true budget)
-        keep_ids = self._repair_for_original_budget(keep_ids, items, budget)
-
-        outsource_ids = [it["id"] for it in items if it["id"] not in keep_ids]
-        return keep_ids, outsource_ids
-    
-    def _sanity_check_randomly_select(self, items, budget):
-        """
-        Sanity check: randomly select items until budget is met.
-        Should be similar to knapsack result on average.
-        """
-        import random
-
-        ids = [it["id"] for it in items]
-        random.shuffle(ids)
-        total_w = 0
-        selected = set()
-        for id in ids:
-            it = next(it for it in items if it["id"] == id)
-            w = max(1, math.ceil(float(it["weight"])))
-            if total_w + w <= budget:
-                selected.add(id)
-                total_w += w
-            if total_w >= budget:
-                break
-        # print(f"Random selection kept {len(selected)}/{len(items)} items")
-        outsource_ids = [it["id"] for it in items if it["id"] not in selected]
-        return selected, outsource_ids
-
-    def _repair_for_original_budget(self, keep_ids, items, budget):
-        """
-        If the scaled solution slightly exceeds the true (unscaled) budget due to ceil rounding,
-        drop items with the worst value/weight ratio until the original budget is satisfied.
-        """
-        # Build list of kept items with original weights/values
-        kept = [it for it in items if it["id"] in keep_ids]
-        # Use ceil for weights to match the scaling logic
-        total_w = sum(max(1, math.ceil(float(it["weight"]))) for it in kept)
-        
-        if total_w <= budget:
-            return keep_ids
-
-        # Sort kept items by "weakness": lowest value/weight first
-        # Drop until within true budget
-        kept_sorted = sorted(
-            kept,
-            key=lambda it: ( (float(it["value"]) / max(1, math.ceil(float(it["weight"])))) if float(it["weight"]) > 0 else float('inf') )
-        )
-        
-        keep_ids = set(keep_ids)
-        for it in kept_sorted:
-            if total_w <= budget:
-                break
-            item_weight = max(1, math.ceil(float(it["weight"])))
-            keep_ids.discard(it["id"])
-            total_w -= item_weight
-
-        return keep_ids
     
     # ==================== Request Removal & Tracking ====================
 
@@ -515,6 +367,8 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
             if r.id in outsource_set:
                 self._outsourced_req_ids.add(r.id)
                 self._track_outsourced_request(r, was_running=False, current_time=current_time)
+                # Clear TTFT estimate since request is outsourced
+                self._ttft_tracker.clear_estimate(r.id)
                 waiting_count += 1
             else:
                 kept.append(r)
@@ -535,85 +389,29 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                 self._requests.pop(r.id, None)
                 self._outsourced_req_ids.add(r.id)
                 self._track_outsourced_request(r, was_running=True, current_time=current_time)
+                # Clear TTFT estimate since request is outsourced
+                self._ttft_tracker.clear_estimate(r.id)
                 running_count += 1
             else:
                 new_running.append(r)
         self._running = new_running
         
         if self._debug_outsourcing:
-            logger.debug(f"[Replica {self._replica_id}] Outsourced {waiting_count} waiting + {running_count} running requests")
+            logger.info(f"[Replica {self._replica_id}] Outsourced {waiting_count} waiting + {running_count} running requests")
     
     def _track_outsourced_request(self, request: Request, was_running: bool, current_time: float) -> None:
-        """Track details of an outsourced request for later reporting."""
-        # Calculate API cost (example pricing, adjust as needed)
-        input_tokens = request.num_prefill_tokens
-        output_tokens = request.num_decode_tokens
-        api_cost = self._calculate_api_cost(input_tokens, output_tokens)
-        
-        # Track details
-        self._outsourced_request_details.append({
-            'request_id': request.id,
-            'outsourced_at': current_time,  # Use simulation time
-            'arrived_at': request.arrived_at,
-            'queued_at': request.queued_at,
-            'was_running': was_running,
-            'num_prefill_tokens': input_tokens,
-            'num_decode_tokens': output_tokens,
-            'num_processed_tokens': request.num_processed_tokens,
-            'api_cost_usd': api_cost,
-            'replica_id': str(self._replica_id),
-        })
-    
-    def _calculate_api_cost(self, input_tokens: int, output_tokens: int) -> float:
-        """
-        Calculate API cost based on token counts.
-        
-        Adjust these values based on your actual API pricing.
-        """
-        # Pricing per million tokens (in USD)
-        input_price_per_million = 1.25
-        output_price_per_million = 10.00
-        
-        input_cost = (input_tokens / 1_000_000) * input_price_per_million
-        output_cost = (output_tokens / 1_000_000) * output_price_per_million
-        
-        return input_cost + output_cost
+        """Track details of an outsourced request using the RequestTracker."""
+        self._request_tracker.track_outsourced_request(request, was_running, current_time)
     
     # ==================== Public API for Metrics Collection ====================
     
     def get_outsourced_request_details(self) -> List[dict]:
         """Return the list of outsourced request details."""
-        return self._outsourced_request_details
+        return self._request_tracker.get_outsourced_request_details()
     
     def get_outsourcing_statistics(self) -> dict:
         """Calculate and return outsourcing statistics."""
-        if not self._outsourced_request_details:
-            return {
-                'total_outsourced': 0,
-                'outsourced_from_waiting': 0,
-                'outsourced_from_running': 0,
-                'total_api_cost_usd': 0.0,
-                'total_input_tokens': 0,
-                'total_output_tokens': 0,
-                'replica_id': str(self._replica_id),
-            }
-        
-        total = len(self._outsourced_request_details)
-        from_running = sum(1 for d in self._outsourced_request_details if d['was_running'])
-        from_waiting = total - from_running
-        total_cost = sum(d['api_cost_usd'] for d in self._outsourced_request_details)
-        total_input = sum(d['num_prefill_tokens'] for d in self._outsourced_request_details)
-        total_output = sum(d['num_decode_tokens'] for d in self._outsourced_request_details)
-        
-        return {
-            'total_outsourced': total,
-            'outsourced_from_waiting': from_waiting,
-            'outsourced_from_running': from_running,
-            'total_api_cost_usd': total_cost,
-            'total_input_tokens': total_input,
-            'total_output_tokens': total_output,
-            'replica_id': str(self._replica_id),
-        }
+        return self._request_tracker.get_outsourcing_statistics()
         
     @property
     def memory_usage_percent(self) -> float:
@@ -679,6 +477,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                     request, num_new_tokens
                 )
                 if new_blocks is None:
+                    print(f"Cannot schedule request {request.id} due to memory constraints.")
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
                     preempted_req: Request = self._running.pop()  # from last
@@ -834,3 +633,20 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
         self._kv_cache_manager.free(request)
         self._kv_cache_manager.free_block_hashes(request)
         del self._requests[request.id]
+    
+    def save_ttft_estimates(self, output_dir: str) -> None:
+        """
+        Save tracked TTFT estimates to a CSV file.
+        
+        Args:
+            output_dir: Directory where to save the estimates file
+        """
+        import os
+        filepath = os.path.join(output_dir, f"ttft_estimates_replica_{self._replica_id}.csv")
+        self._ttft_tracker.save_to_csv(filepath)
+        
+        # Also log summary stats
+        # stats = self._ttft_tracker.get_summary_stats()
+        # if stats:
+        #     logger.info(f"[Replica {self._replica_id}] TTFT Estimate Summary: {stats}")
+

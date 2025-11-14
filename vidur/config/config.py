@@ -397,6 +397,47 @@ class VllmV1SchedulerConfig(BaseReplicaSchedulerConfig):
         default=512,
         metadata={"help": "Chunk size for chunked prefill."},
     )
+    
+    # Outsourcing configuration parameters
+    use_dynamic_prefill_throughput: bool = field(
+        default=True,
+        metadata={"help": "Whether to use dynamic prefill throughput estimates for outsourcing decisions."},
+    )
+    
+    prefill_tokens_per_sec: int = field(
+        default=1000,
+        metadata={"help": "Estimated prefill throughput in tokens/sec for outsourcing decisions."},
+    )
+    
+    decode_weight_ratio: float = field(
+        default=1,
+        metadata={"help": "Weight ratio for decode vs prefill tokens in knapsack optimization."},
+    )
+    
+    budget_horizon_iterations: int = field(
+        default=2,
+        metadata={"help": "Number of iterations to look ahead when calculating local budget."},
+    )
+    
+    candidate_queue_multiplier: int = field(
+        default=4,
+        metadata={"help": "Multiplier for maximum candidate queue size (multiplied by micro-batch size)."},
+    )
+    
+    knapsack_strategy: str = field(
+        default="dp_scaled",
+        metadata={"help": "Knapsack selection strategy: 'fractional', 'dp', 'dp_scaled', or 'random'."},
+    )
+    
+    ttft_violation_mode: str = field(
+        default="all",
+        metadata={"help": "TTFT violation detection mode: 'all' (check all waiting) or 'head' (check only head)."},
+    )
+    
+    debug_outsourcing: bool = field(
+        default=False,
+        metadata={"help": "Enable debug logging for outsourcing decisions."},
+    )
 
     @staticmethod
     def get_type():
