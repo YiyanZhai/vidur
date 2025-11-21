@@ -3,6 +3,7 @@ import json
 import os
 from typing import Dict, List
 
+import numpy as np
 import pandas as pd
 import wandb
 
@@ -111,8 +112,20 @@ class ClusterMetricsStore:
 
     def _save_as_json(self, data, base_path: str, file_name: str):
         os.makedirs(base_path, exist_ok=True)
+        
+        # Custom JSON encoder to handle numpy types
+        class NumpyEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, (np.integer, np.int64, np.int32)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float64, np.float32)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                return super().default(obj)
+        
         with open(f"{base_path}/{file_name}.json", "w") as f:
-            json.dump(data, f)
+            json.dump(data, f, cls=NumpyEncoder)
 
         if wandb.run and self._config.save_table_to_wandb:
             wandb.log({f"{file_name}": data}, step=0)

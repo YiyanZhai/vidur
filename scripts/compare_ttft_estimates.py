@@ -3,7 +3,7 @@ Script to compare estimated TTFT with actual TTFT from simulation runs.
 
 Usage:
     python scripts/compare_ttft_estimates.py \
-        --run_dir simulator_output/vanilla_1024
+        --run_dir simulator_output/combined_vanilla_5
 
 This script loads:
 1. Estimated TTFT from ttft_estimates_replica_0.csv

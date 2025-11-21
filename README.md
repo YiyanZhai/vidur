@@ -68,11 +68,52 @@ python -m vidur.main \
 --replica_config_tensor_parallel_size 1 \
 --replica_config_num_pipeline_stages 1 \
 --request_generator_config_type synthetic \
---synthetic_request_generator_config_num_requests 128 \
+--synthetic_request_generator_config_num_requests 512 \
 --length_generator_config_type trace \
 --trace_request_length_generator_config_trace_file ./data/processed_traces/mooncake_conversation_trace.csv \
 --interval_generator_config_type poisson \
 --poisson_request_interval_generator_config_qps 8.0 \
+--global_scheduler_config_type round_robin \
+--replica_scheduler_config_type vllm_v1 \
+--vllm_v1_scheduler_config_chunk_size 1024 \
+--vllm_v1_scheduler_config_batch_size_cap 1024 \
+--cache_config_enable_prefix_caching
+```
+
+```
+python -m vidur.main \
+--time_limit 10800 \
+--replica_config_model_name meta-llama/Meta-Llama-3-8B \
+--replica_config_device h100 \
+--replica_config_network_device h100_dgx \
+--cluster_config_num_replicas 4 \
+--replica_config_tensor_parallel_size 1 \
+--replica_config_num_pipeline_stages 1 \
+--request_generator_config_type synthetic \
+--synthetic_request_generator_config_num_requests 512 \
+--length_generator_config_type trace \
+--trace_request_length_generator_config_trace_file ./data/processed_traces/mooncake_conversation_trace.csv \
+--interval_generator_config_type poisson \
+--poisson_request_interval_generator_config_qps 8.0 \
+--global_scheduler_config_type round_robin \
+--replica_scheduler_config_type vllm_v1 \
+--vllm_v1_scheduler_config_chunk_size 512 \
+--vllm_v1_scheduler_config_batch_size_cap 512 \
+--cache_config_enable_prefix_caching
+```
+
+Real Trace Example:
+```
+python -m vidur.main \
+--time_limit 5269969 \
+--replica_config_model_name meta-llama/Meta-Llama-3-8B \
+--replica_config_device h100 \
+--replica_config_network_device h100_dgx \
+--cluster_config_num_replicas 1 \
+--replica_config_tensor_parallel_size 1 \
+--replica_config_num_pipeline_stages 1 \
+--request_generator_config_type trace \
+--trace_request_generator_config_trace_file ./data/processed_traces/sharegpt_burstgpt_timestamps_removed_0.2.csv \
 --global_scheduler_config_type round_robin \
 --replica_scheduler_config_type vllm_v1 \
 --vllm_v1_scheduler_config_chunk_size 512 \

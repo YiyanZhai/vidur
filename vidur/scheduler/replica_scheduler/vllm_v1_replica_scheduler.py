@@ -477,7 +477,7 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                     request, num_new_tokens
                 )
                 if new_blocks is None:
-                    print(f"Cannot schedule request {request.id} due to memory constraints.")
+                    # print(f"Cannot schedule request {request.id} due to memory constraints.")
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
                     preempted_req: Request = self._running.pop()  # from last
@@ -524,7 +524,19 @@ class VLLMV1ReplicaScheduler(BaseReplicaScheduler):
                 # Using `request.num_prefill_tokens` is fine even for restarted requests
                 # because done decode tokens have been added to prefill tokens.
                 num_new_tokens = request.num_prefill_tokens - num_computed_tokens
-                if num_new_tokens == 0:
+                if num_new_tokens < 0:
+                    # This can happen when block_hash_ids from trace don't match actual prefill tokens,
+                    # often due to session_id collisions or trace generation bugs.
+                    # Treat as no cache hit and process all prefill tokens.
+                    print(
+                        f"WARNING: Request {request.id} has more cached tokens ({num_computed_tokens}) "
+                        f"than prefill tokens ({request.num_prefill_tokens}). "
+                        f"Possible session_id collision in trace. Ignoring cache."
+                    )
+                    computed_blocks = []
+                    num_computed_tokens = 0
+                    num_new_tokens = request.num_prefill_tokens
+                elif num_new_tokens == 0:
                     # This happens when prompt length is divisible by the block
                     # size and all blocks are cached. Now we force to recompute
                     # the last block. Note that we have to re-compute an entire
