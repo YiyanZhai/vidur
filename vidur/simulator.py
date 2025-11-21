@@ -145,8 +145,8 @@ class Simulator:
 
         chrome_trace = {"traceEvents": self._event_chrome_trace}
 
-        with open(trace_file, "w") as f:
-            json.dump(chrome_trace, f, cls=JsonEncoder)
+        # with open(trace_file, "w") as f:
+        #     json.dump(chrome_trace, f, cls=JsonEncoder)
 
         if wandb.run:
             zip_file_path = f"{self._config.output_dir}/chrome_trace.zip"
@@ -171,5 +171,5 @@ class Simulator:
                         replica_scheduler.save_ttft_estimates(output_dir)
             logger.info("TTFT estimates saved")
         except Exception as e:
-            logger.warning(f"Failed to save TTFT estimates: {e}")
+            logger.info(f"Failed to save TTFT estimates: {e}")
 

@@ -3,13 +3,12 @@ Script to compare estimated TTFT with actual TTFT from simulation runs.
 
 Usage:
     python scripts/compare_ttft_estimates.py \
-        --estimates simulator_output/slo100,bs512/ttft_estimates_replica_0.csv \
-        --actual simulator_output/slo100,bs512/request_metrics.csv \
-        --output ttft_comparison.png
+        --run_dir simulator_output/vanilla_1024
 
 This script loads:
-1. Estimated TTFT from a run WITH outsourcing (tracks estimates before outsourcing)
-2. Actual TTFT from a run WITHOUT outsourcing (ground truth performance)
+1. Estimated TTFT from ttft_estimates_replica_0.csv
+2. Actual TTFT from request_metrics.csv
+3. Output file name is ttft_comparison_{run_dir.split('/')[-1]}.png)
 
 And produces comparison plots and statistics.
 """
@@ -171,18 +170,37 @@ def main():
     parser = argparse.ArgumentParser(
         description='Compare estimated vs actual TTFT from simulation runs'
     )
-    parser.add_argument('--estimates', required=True,
-                       help='Path to TTFT estimates CSV file')
-    parser.add_argument('--actual', required=True,
-                       help='Path to request metrics CSV file with actual TTFT')
-    parser.add_argument('--output', default='ttft_comparison.png',
-                       help='Output plot path')
+    parser.add_argument('--run_dir', required=True,
+                       help='Path to the simulation run directory (e.g., simulator_output/vanilla_1024)')
     
     args = parser.parse_args()
     
+    # Construct file paths
+    run_dir = Path(args.run_dir)
+    estimates_path = run_dir / 'ttft_estimates_replica_0.csv'
+    actual_path = run_dir / 'request_metrics.csv'
+    
+    # Construct output filename based on run_dir
+    run_name = run_dir.name  # Gets the last part of the path (e.g., 'vanilla_1024')
+    output_path = f'experiment_res/ttft_comparison_{run_name}.png'
+    
+    # Check if input files exist
+    if not estimates_path.exists():
+        print(f"ERROR: Estimates file not found: {estimates_path}")
+        return
+    if not actual_path.exists():
+        print(f"ERROR: Actual metrics file not found: {actual_path}")
+        return
+    
+    print(f"Loading data from: {run_dir}")
+    print(f"  Estimates: {estimates_path}")
+    print(f"  Actual: {actual_path}")
+    print(f"  Output: {output_path}")
+    print()
+    
     # Load data
-    estimates_df = load_estimated_ttft(args.estimates)
-    actual_df = load_actual_ttft(args.actual)
+    estimates_df = load_estimated_ttft(str(estimates_path))
+    actual_df = load_actual_ttft(str(actual_path))
     
     # Merge and compare
     comparison_df = merge_and_compare(estimates_df, actual_df)
@@ -195,12 +213,12 @@ def main():
     print_statistics(comparison_df)
     
     # Save comparison data
-    output_csv = Path(args.output).with_suffix('.csv')
+    output_csv = Path(output_path).with_suffix('.csv')
     comparison_df.to_csv(output_csv, index=False)
     print(f"Saved comparison data to: {output_csv}")
     
     # Create plots
-    plot_comparison(comparison_df, args.output)
+    plot_comparison(comparison_df, output_path)
 
 
 if __name__ == '__main__':

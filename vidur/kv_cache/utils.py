@@ -82,27 +82,11 @@ def hash_request_tokens(
     Returns:
         The list of computed hash values.
     """
-    if request.block_hash_ids:
+    if request.block_hash_ids is not None and len(request.block_hash_ids) > 0:
         return [
             BlockHashType(hash_value, tuple()) for hash_value in request.block_hash_ids
         ]
 
-    token_ids = request.all_token_ids
-
-    req_extra_keys = None
-
-    ret = []
-    parent_block_hash_value = None
-    for start in range(0, len(token_ids), block_size):
-        end = start + block_size
-        block_token_ids = token_ids[start:end]
-        # Do not hash the block if it is not full.
-        if len(block_token_ids) < block_size:
-            break
-
-        block_hash = hash_block_tokens(
-            hash_function, parent_block_hash_value, block_token_ids, req_extra_keys
-        )
-        ret.append(block_hash)
-        parent_block_hash_value = block_hash.hash_value
-    return ret
+    # If block_hash_ids not provided, we cannot compute hashes without token IDs
+    # Return empty list as we don't have token-level information in vidur
+    return []

@@ -45,12 +45,14 @@ class Request(BaseEntity):
         block_size: Optional[int],
         session_id: Optional[int] = None,
     ):
+        # print("Creating request:", arrived_at, num_prefill_tokens, num_decode_tokens, block_hash_ids, block_size, session_id)
         if block_hash_ids is not None:
             last_block_size = (
                 num_prefill_tokens
                 + num_decode_tokens
                 - (block_size * len(block_hash_ids))
             )
+            # print("Last block size:", last_block_size)
             assert (
                 last_block_size >= 0 and last_block_size < block_size
             ), f"{last_block_size} is not in the range [0, {block_size})"
@@ -74,7 +76,7 @@ class Request(BaseEntity):
         self._preempted_time = 0
         self._completed_at = 0
         self._prefill_completed_at = 0
-        self._prefill_slo_time = 400
+        self._prefill_slo_time = 10000
         self._latest_stage_scheduled_at = 0
         self._latest_stage_completed_at = 0
         self._latest_iteration_scheduled_at = 0
