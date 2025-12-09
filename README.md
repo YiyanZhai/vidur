@@ -105,11 +105,11 @@ python -m vidur.main \
 Real Trace Example:
 ```
 python -m vidur.main \
---time_limit 5269969 \
+--time_limit 2000000 \
 --replica_config_model_name meta-llama/Meta-Llama-3-8B \
 --replica_config_device h100 \
 --replica_config_network_device h100_dgx \
---cluster_config_num_replicas 1 \
+--cluster_config_num_replicas 2 \
 --replica_config_tensor_parallel_size 1 \
 --replica_config_num_pipeline_stages 1 \
 --request_generator_config_type trace \

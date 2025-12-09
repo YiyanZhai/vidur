@@ -58,6 +58,8 @@ class Request(BaseEntity):
             ), f"{last_block_size} is not in the range [0, {block_size})"
 
         self._id = Request.generate_id()
+        print(self._id)
+        # arrived_at = float(arrived_at) / 5
         self._arrived_at = arrived_at
         self._queued_at = arrived_at
         self._replica_id = None
@@ -76,7 +78,7 @@ class Request(BaseEntity):
         self._preempted_time = 0
         self._completed_at = 0
         self._prefill_completed_at = 0
-        self._prefill_slo_time = 10000
+        self._prefill_slo_time = 2**30
         self._latest_stage_scheduled_at = 0
         self._latest_stage_completed_at = 0
         self._latest_iteration_scheduled_at = 0

@@ -489,7 +489,7 @@ class MetricsConfig:
         metadata={"help": "Weights & Biases run id."},
     )
     enable_chrome_trace: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Enable Chrome tracing."},
     )
     save_table_to_wandb: bool = field(
@@ -497,15 +497,15 @@ class MetricsConfig:
         metadata={"help": "Whether to save table to wandb."},
     )
     store_plots: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Whether to store plots."},
     )
     store_operation_metrics: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to store operation metrics."},
     )
     store_token_completion_metrics: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to store token completion metrics."},
     )
     store_request_metrics: bool = field(
