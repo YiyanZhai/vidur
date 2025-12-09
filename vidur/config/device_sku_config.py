@@ -41,3 +41,12 @@ class H100DeviceSKUConfig(BaseDeviceSKUConfig):
     @staticmethod
     def get_type():
         return DeviceSKUType.H100
+
+@dataclass
+class RTX6000BlackwellDeviceSKUConfig(BaseDeviceSKUConfig):
+    fp16_tflops: int = 420
+    total_memory_gb: int = 48
+
+    @staticmethod
+    def get_type():
+        return DeviceSKUType.RTX6000_BLACKWELL

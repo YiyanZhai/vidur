@@ -107,6 +107,22 @@ class Llama3_8BModelConfig(Llama2ModelConfig):
     @staticmethod
     def get_name():
         return "meta-llama/Meta-Llama-3-8B"
+    
+@dataclass
+class Qwen3Coder_30B_A3B_InstructModelConfig(Llama2ModelConfig):
+    # Qwen/Qwen3-Coder-30B-A3B-Instruct (MoE)
+    num_layers: int = 48
+    num_q_heads: int = 32
+    num_kv_heads: int = 4
+    embedding_dim: int = 2048          # hidden_size
+    mlp_hidden_dim: int = 6144         # intermediate_size (per dense FFN / expert base)
+    max_model_len: int = 262144        # max_position_embeddings (256K)
+    rope_theta: Optional[float] = 10_000_000
+    vocab_size: int = 151_936
+
+    @staticmethod
+    def get_name():
+        return "Qwen/Qwen3-Coder-30B-A3B-Instruct"
 
 
 @dataclass
